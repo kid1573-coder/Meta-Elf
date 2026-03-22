@@ -57,6 +57,26 @@ async function applyBossKey() {
   saveMsg.value = "老板键已更新";
   setTimeout(() => (saveMsg.value = ""), 1600);
 }
+
+watch(
+  () => settings.value?.theme,
+  async (to, from) => {
+    if (!ready || from === undefined || to === from) return;
+    await save();
+    saveMsg.value = "主题已保存";
+    setTimeout(() => (saveMsg.value = ""), 1200);
+  },
+);
+
+watch(
+  () => settings.value?.quoteSource,
+  async (to, from) => {
+    if (!ready || from === undefined || to === from) return;
+    await save();
+    saveMsg.value = "行情源已保存";
+    setTimeout(() => (saveMsg.value = ""), 1200);
+  },
+);
 </script>
 
 <template>
@@ -72,15 +92,51 @@ async function applyBossKey() {
         <div class="nav active">通用</div>
         <div class="nav disabled">账户</div>
         <div class="nav disabled">快捷键</div>
-        <div class="nav disabled">分组</div>
         <div class="nav disabled">代理</div>
         <div class="nav disabled">关于</div>
       </aside>
 
       <main class="content" v-if="settings">
         <section>
+          <h2>界面主题</h2>
+          <p class="sub">黑白灰配色，不含紫色；涨跌颜色仍由下方「涨跌幅颜色」控制。</p>
+          <div class="row">
+            <label class="radio">
+              <input v-model="settings.theme" type="radio" value="light" />
+              浅色
+            </label>
+            <label class="radio">
+              <input v-model="settings.theme" type="radio" value="dark" />
+              深色
+            </label>
+          </div>
+        </section>
+
+        <section>
+          <h2>行情数据源</h2>
+          <p class="sub">
+            默认使用东方财富公开接口；自选列表买一卖一在东财「列表」字段上与部分 App 不一致时，可改用腾讯行情。分时、K
+            线仍走东财。接口可能变更或限频，仅供个人盯盘，不构成投资建议。断网或调试时可切本地 Mock。
+          </p>
+          <div class="row">
+            <label class="radio">
+              <input v-model="settings.quoteSource" type="radio" value="eastmoney" />
+              东财公开接口（推荐）
+            </label>
+            <label class="radio">
+              <input v-model="settings.quoteSource" type="radio" value="tencent" />
+              腾讯行情（列表买一卖一/五档更准）
+            </label>
+            <label class="radio">
+              <input v-model="settings.quoteSource" type="radio" value="mock" />
+              本地 Mock
+            </label>
+          </div>
+        </section>
+
+        <section>
           <h2>首页字体</h2>
-          <select v-model.number="settings.fontSizePx" class="field">
+          <select v-model.number="settings.fontSizePx" class="yj-field-control font-size-select">
             <option :value="12">12 号</option>
             <option :value="13">13 号</option>
             <option :value="14">14 号</option>
@@ -178,7 +234,7 @@ async function applyBossKey() {
           <h2>老板键</h2>
           <p class="sub">默认 Ctrl+Shift+H：显示/隐藏主窗口。修改后请点击应用。</p>
           <div class="row boss">
-            <input v-model="bossDraft" class="field text" placeholder="Ctrl+Shift+H" />
+            <input v-model="bossDraft" class="yj-field-control boss-input" placeholder="Ctrl+Shift+H" />
             <button type="button" class="btn" @click="applyBossKey">应用老板键</button>
           </div>
         </section>
@@ -197,8 +253,12 @@ async function applyBossKey() {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: linear-gradient(180deg, rgba(14, 12, 30, 0.96), rgba(18, 16, 36, 0.98));
-  color: #e8e6f2;
+  background: linear-gradient(
+    180deg,
+    var(--yj-settings-bg-1),
+    var(--yj-settings-bg-2)
+  );
+  color: var(--yj-text);
 }
 
 .bar {
@@ -206,29 +266,38 @@ async function applyBossKey() {
   align-items: center;
   gap: 12px;
   padding: 10px 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--yj-bar-border);
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.bar .back {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 
 .bar h1 {
   flex: 1;
   margin: 0;
-  font-size: 1.05rem;
+  font-size: 0.86em;
   font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .back {
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.06);
-  color: #ddd6fe;
+  border: 1px solid var(--yj-back-border);
+  background: var(--yj-back-bg);
+  color: var(--yj-back-color);
   padding: 6px 12px;
   cursor: pointer;
+  font-size: 0.78em;
 }
 
 .msg {
-  font-size: 0.82rem;
-  color: #86efac;
-  min-width: 5rem;
+  font-size: 0.78em;
+  color: var(--yj-msg);
+  min-width: 5em;
   text-align: right;
 }
 
@@ -240,23 +309,25 @@ async function applyBossKey() {
 }
 
 .side {
-  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  border-right: 1px solid var(--yj-side-border);
   padding: 12px 10px;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  -webkit-app-region: drag;
+  app-region: drag;
 }
 
 .nav {
   padding: 8px 10px;
   border-radius: 8px;
-  font-size: 0.88rem;
-  color: rgba(232, 230, 242, 0.55);
+  font-size: 0.85em;
+  color: var(--yj-nav-color);
 }
 
 .nav.active {
-  background: rgba(99, 102, 241, 0.25);
-  color: #fff;
+  background: var(--yj-nav-active-bg);
+  color: var(--yj-nav-active-color);
 }
 
 .nav.disabled {
@@ -266,6 +337,8 @@ async function applyBossKey() {
 .content {
   padding: 16px 20px 24px;
   overflow: auto;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 
 section {
@@ -274,14 +347,14 @@ section {
 
 section h2 {
   margin: 0 0 8px;
-  font-size: 0.95rem;
+  font-size: 0.8em;
   font-weight: 600;
 }
 
 .sub {
   margin: 0 0 10px;
-  font-size: 0.8rem;
-  color: rgba(232, 230, 242, 0.55);
+  font-size: 0.78em;
+  color: var(--yj-sub-color);
 }
 
 .chips {
@@ -292,18 +365,18 @@ section h2 {
 
 .chip {
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.04);
-  color: rgba(232, 230, 242, 0.85);
+  border: 1px solid var(--yj-chip-border);
+  background: var(--yj-chip-bg);
+  color: var(--yj-chip-color);
   padding: 6px 12px;
-  font-size: 0.82rem;
+  font-size: 0.8em;
   cursor: pointer;
 }
 
 .chip.on {
-  background: linear-gradient(120deg, rgba(99, 102, 241, 0.55), rgba(168, 85, 247, 0.4));
-  border-color: rgba(129, 140, 248, 0.45);
-  color: #fff;
+  background: var(--yj-chip-on-bg);
+  border-color: var(--yj-chip-on-border);
+  color: var(--yj-chip-on-color);
 }
 
 .row {
@@ -317,7 +390,7 @@ section h2 {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 0.88rem;
+  font-size: 0.88em;
 }
 
 .switch-line {
@@ -325,22 +398,18 @@ section h2 {
   align-items: center;
   gap: 8px;
   margin-top: 10px;
-  font-size: 0.88rem;
+  font-size: 0.88em;
 }
 
-.field {
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(0, 0, 0, 0.25);
-  color: #f5f3ff;
-  padding: 8px 10px;
-  min-width: 160px;
+.font-size-select {
+  min-width: 140px;
 }
 
-.field.text {
+.boss-input {
   flex: 1;
   min-width: 200px;
-  font-family: ui-monospace, monospace;
+  font-family: "DM Sans", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
 }
 
 .slider-row {
@@ -349,9 +418,10 @@ section h2 {
 
 .mono {
   font-family: "DM Sans", ui-monospace, monospace;
-  font-size: 0.85rem;
-  opacity: 0.85;
-  min-width: 3rem;
+  font-size: 0.82em;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.92;
+  min-width: 3em;
 }
 
 .boss {
@@ -363,18 +433,18 @@ section h2 {
 }
 
 .btn {
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.06);
-  color: #e9d5ff;
+  border-radius: 8px;
+  border: 1px solid var(--yj-btn-border);
+  background: var(--yj-btn-bg);
+  color: var(--yj-btn-color);
   padding: 8px 14px;
   cursor: pointer;
-  font-size: 0.88rem;
+  font-size: 0.82em;
 }
 
 .btn.primary {
-  background: linear-gradient(120deg, rgba(99, 102, 241, 0.65), rgba(168, 85, 247, 0.5));
-  border-color: rgba(129, 140, 248, 0.5);
-  color: #fff;
+  background: var(--yj-btn-primary-bg);
+  border-color: var(--yj-btn-primary-border);
+  color: var(--yj-btn-primary-color);
 }
 </style>

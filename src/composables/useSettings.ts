@@ -1,6 +1,7 @@
 import { computed, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings } from "../types/app";
+import { ensureWatchGroupsField } from "../utils/watchGroups";
 
 const settings = ref<AppSettings | null>(null);
 const loading = ref(true);
@@ -10,11 +11,15 @@ export function useSettings() {
     loading.value = true;
     try {
       const s = await invoke<AppSettings>("load_settings");
+      const qs = (s as AppSettings).quoteSource;
       settings.value = {
         ...s,
+        theme: (s as AppSettings).theme === "light" ? "light" : "dark",
         panelMode: (s.panelMode as AppSettings["panelMode"]) ?? "normal",
         colorScheme: (s.colorScheme as AppSettings["colorScheme"]) ?? "redUp",
         profitDisplay: (s.profitDisplay as AppSettings["profitDisplay"]) ?? "both",
+        quoteSource:
+          qs === "mock" ? "mock" : qs === "tencent" ? "tencent" : "eastmoney",
       };
     } finally {
       loading.value = false;
@@ -25,11 +30,16 @@ export function useSettings() {
     if (!settings.value) return;
     const next = { ...settings.value, ...partial };
     const saved = await invoke<AppSettings>("save_settings", { settings: next });
+    const qs = (saved as AppSettings).quoteSource;
     settings.value = {
       ...saved,
+      watchGroups: ensureWatchGroupsField(saved),
+      theme: (saved as AppSettings).theme === "light" ? "light" : "dark",
       panelMode: (saved.panelMode as AppSettings["panelMode"]) ?? "normal",
       colorScheme: (saved.colorScheme as AppSettings["colorScheme"]) ?? "redUp",
       profitDisplay: (saved.profitDisplay as AppSettings["profitDisplay"]) ?? "both",
+      quoteSource:
+        qs === "mock" ? "mock" : qs === "tencent" ? "tencent" : "eastmoney",
     };
     return settings.value;
   }
@@ -48,7 +58,8 @@ export function useSettings() {
     if (!s) return {};
     return {
       fontSize: `${s.fontSizePx}px`,
-      "--yj-opacity": String(s.opacity),
+      opacity: String(s.opacity),
+      "--yj-window-opacity": String(s.opacity),
     } as Record<string, string>;
   });
 

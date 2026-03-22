@@ -2,15 +2,26 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
+use tauri::WindowEvent;
 use tauri_plugin_global_shortcut::{Builder as GsBuilder, GlobalShortcutExt, ShortcutState};
 
 mod quotes;
 
+fn default_theme() -> String {
+    "dark".into()
+}
+
+fn default_quote_source() -> String {
+    "eastmoney".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
+    #[serde(default = "default_theme")]
+    pub theme: String,
     pub font_size_px: u32,
     pub visible_columns: Vec<String>,
     pub panel_mode: String,
@@ -22,6 +33,10 @@ pub struct AppSettings {
     pub skip_taskbar: bool,
     pub boss_shortcut: String,
     pub watchlist: Vec<WatchItem>,
+    #[serde(default = "default_watch_groups")]
+    pub watch_groups: Vec<WatchGroup>,
+    #[serde(default = "default_quote_source")]
+    pub quote_source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,9 +46,53 @@ pub struct WatchItem {
     pub name: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatchGroup {
+    pub id: String,
+    pub name: String,
+    pub codes: Vec<String>,
+}
+
+fn default_watch_groups() -> Vec<WatchGroup> {
+    vec![]
+}
+
+fn migrate_watch_groups(settings: &mut AppSettings) {
+    if !settings.watch_groups.is_empty() {
+        return;
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    if settings.watchlist.is_empty() {
+        settings.watch_groups.push(WatchGroup {
+            id,
+            name: "自选股".to_string(),
+            codes: vec![],
+        });
+    } else {
+        settings.watch_groups.push(WatchGroup {
+            id,
+            name: "自选股".to_string(),
+            codes: settings.watchlist.iter().map(|w| w.code.clone()).collect(),
+        });
+    }
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
+        let watchlist = vec![
+            WatchItem {
+                code: "sh000001".into(),
+                name: "上证指数".into(),
+            },
+            WatchItem {
+                code: "sz399001".into(),
+                name: "深证成指".into(),
+            },
+        ];
+        let codes: Vec<String> = watchlist.iter().map(|w| w.code.clone()).collect();
         Self {
+            theme: "dark".into(),
             font_size_px: 14,
             visible_columns: vec![
                 "name".into(),
@@ -50,16 +109,13 @@ impl Default for AppSettings {
             always_on_top: true,
             skip_taskbar: false,
             boss_shortcut: "Ctrl+Shift+H".into(),
-            watchlist: vec![
-                WatchItem {
-                    code: "sh000001".into(),
-                    name: "上证指数".into(),
-                },
-                WatchItem {
-                    code: "sz399001".into(),
-                    name: "深证成指".into(),
-                },
-            ],
+            watchlist,
+            watch_groups: vec![WatchGroup {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: "自选股".into(),
+                codes,
+            }],
+            quote_source: default_quote_source(),
         }
     }
 }
@@ -86,7 +142,9 @@ fn load_settings_inner() -> Result<AppSettings, String> {
         return Ok(AppSettings::default());
     }
     let raw = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&raw).map_err(|e| e.to_string())
+    let mut s: AppSettings = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    migrate_watch_groups(&mut s);
+    Ok(s)
 }
 
 #[tauri::command]
@@ -104,19 +162,69 @@ fn save_settings(settings: AppSettings) -> Result<AppSettings, String> {
 }
 
 #[tauri::command]
-fn get_quotes() -> Result<Vec<quotes::QuoteRow>, String> {
-    Ok(quotes::mock_provider().fetch())
+async fn get_quotes(
+    codes: Vec<String>,
+    quote_source: String,
+) -> Result<Vec<quotes::QuoteRow>, String> {
+    quotes::get_quotes_impl(codes, &quote_source).await
+}
+
+#[tauri::command]
+async fn search_securities(query: String) -> Result<Vec<quotes::SuggestItem>, String> {
+    quotes::search_securities_eastmoney(&query).await
+}
+
+/// 东财股吧个股人气榜（搜索框为空时的推荐）
+#[tauri::command]
+async fn fetch_hot_stocks() -> Result<Vec<quotes::SuggestItem>, String> {
+    quotes::fetch_hot_stocks_eastmoney(30).await
+}
+
+#[tauri::command]
+async fn get_stock_intraday(
+    code: String,
+    quote_source: String,
+) -> Result<quotes::IntradaySeries, String> {
+    quotes::get_stock_intraday_impl(&code, &quote_source).await
+}
+
+#[tauri::command]
+async fn get_stock_kline(
+    code: String,
+    period: String,
+    quote_source: String,
+) -> Result<quotes::KlineSeries, String> {
+    quotes::get_stock_kline_impl(&code, &period, &quote_source).await
+}
+
+#[tauri::command]
+async fn get_stock_order_book(
+    code: String,
+    quote_source: String,
+) -> Result<quotes::OrderBook, String> {
+    quotes::get_stock_order_book_impl(&code, &quote_source).await
+}
+
+/// 股市异动（东财盘口异动多类合并，与行情 `quote_source` 一致）
+#[tauri::command]
+async fn get_market_moves(quote_source: String) -> Result<Vec<quotes::MarketMoveItem>, String> {
+    quotes::get_market_moves_impl(&quote_source).await
+}
+
+/// 主面板底部：行业板块滚动 + 涨跌家数 + 沪深两市成交额/昨成交额
+#[tauri::command]
+async fn get_market_ribbon(quote_source: String) -> Result<quotes::MarketRibbonSnapshot, String> {
+    quotes::get_market_ribbon_impl(&quote_source).await
 }
 
 fn apply_window_prefs_internal(
     app: &tauri::AppHandle,
-    opacity: f64,
+    _opacity: f64,
     always_on_top: bool,
     skip_taskbar: bool,
 ) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("main") {
-        let o = opacity.clamp(0.35, 1.0);
-        let _ = win.set_opacity(o);
+        // 整体透明度由前端根壳层（.yj-shell）的 style.opacity 控制（Tauri 2 WebviewWindow 无 set_opacity）
         let _ = win.set_always_on_top(always_on_top);
         let _ = win.set_skip_taskbar(skip_taskbar);
     }
@@ -133,6 +241,48 @@ fn apply_window_prefs(
     apply_window_prefs_internal(&app, opacity, always_on_top, skip_taskbar)
 }
 
+fn show_and_focus_main(app: &tauri::AppHandle) {
+    let settings = load_settings_inner().unwrap_or_default();
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+    let _ = apply_window_prefs_internal(
+        app,
+        settings.opacity,
+        settings.always_on_top,
+        settings.skip_taskbar,
+    );
+}
+
+/// Windows：置顶 + 无边框透明窗口最小化后任务栏按钮常消失；最小化前暂取消置顶，最小化后按设置重新登记任务栏。
+#[tauri::command]
+fn minimize_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    let settings = load_settings_inner().unwrap_or_default();
+    let Some(w) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        if settings.always_on_top {
+            w.set_always_on_top(false).map_err(|e| e.to_string())?;
+        }
+    }
+
+    w.minimize().map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "windows")]
+    {
+        if !settings.skip_taskbar {
+            w.set_skip_taskbar(false).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(())
+}
+
 fn register_boss_shortcut(app: &tauri::AppHandle, shortcut: &str) -> Result<(), String> {
     let gs = app.global_shortcut();
     let _ = gs.unregister_all();
@@ -145,8 +295,7 @@ fn register_boss_shortcut(app: &tauri::AppHandle, shortcut: &str) -> Result<(), 
                 if v {
                     let _ = w.hide();
                 } else {
-                    let _ = w.show();
-                    let _ = w.set_focus();
+                    show_and_focus_main(app_h);
                 }
             }
         }
@@ -167,9 +316,35 @@ pub fn run() {
             load_settings,
             save_settings,
             get_quotes,
+            search_securities,
+            fetch_hot_stocks,
+            get_stock_intraday,
+            get_stock_kline,
+            get_stock_order_book,
+            get_market_moves,
+            get_market_ribbon,
             apply_window_prefs,
+            minimize_main_window,
             update_boss_shortcut
         ])
+        .on_window_event(|window, event| {
+            #[cfg(target_os = "windows")]
+            if window.label() == "main" {
+                if let WindowEvent::Focused(true) = event {
+                    if window.is_minimized().unwrap_or(false) {
+                        return;
+                    }
+                    let app = window.app_handle().clone();
+                    let settings = load_settings_inner().unwrap_or_default();
+                    let _ = apply_window_prefs_internal(
+                        &app,
+                        settings.opacity,
+                        settings.always_on_top,
+                        settings.skip_taskbar,
+                    );
+                }
+            }
+        })
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -200,16 +375,18 @@ pub fn run() {
             let _tray = TrayIconBuilder::new()
                 .icon(icon)
                 .menu(&menu)
-                .menu_on_left_click(true)
+                .show_menu_on_left_click(true)
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::DoubleClick { button, .. } = event {
+                        if button == MouseButton::Left {
+                            show_and_focus_main(tray.app_handle());
+                        }
+                    }
+                })
                 .on_menu_event(move |app, event| {
                     match event.id.as_ref() {
                         "quit" => app.exit(0),
-                        "show" => {
-                            if let Some(w) = app.get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.set_focus();
-                            }
-                        }
+                        "show" => show_and_focus_main(app),
                         _ => {}
                     }
                 })

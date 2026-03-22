@@ -17,3 +17,24 @@ export function changeClass(pct: number, scheme: AppSettings["colorScheme"]) {
   if (pct < 0) return scheme === "redUp" ? "down-green" : "down-red";
   return "flat";
 }
+
+/** 人民币成交额短格式（元 → 万亿 / 亿 / 万） */
+export function fmtTurnoverCn(yuan: number) {
+  if (!Number.isFinite(yuan) || yuan <= 0) return "—";
+  const yi = 1e8;
+  const wanYi = 1e12;
+  if (yuan >= wanYi) return `${(yuan / wanYi).toFixed(2)}万亿`;
+  if (yuan >= yi) return `${(yuan / yi).toFixed(1)}亿`;
+  return `${(yuan / 1e4).toFixed(0)}万`;
+}
+
+/** 与昨日差额（元），带符号，亿/万 */
+export function fmtDeltaTurnoverCn(deltaYuan: number) {
+  if (!Number.isFinite(deltaYuan)) return "—";
+  if (deltaYuan === 0) return "0";
+  const yi = 1e8;
+  const sign = deltaYuan > 0 ? "+" : "";
+  const v = Math.abs(deltaYuan);
+  if (v >= yi) return `${sign}${(deltaYuan / yi).toFixed(1)}亿`;
+  return `${sign}${(deltaYuan / 1e4).toFixed(0)}万`;
+}

@@ -3,7 +3,16 @@ export type WatchItem = {
   name: string;
 };
 
+/** 自选分组：codes 为组内顺序；同一 code 可出现在多个分组 */
+export type WatchGroup = {
+  id: string;
+  name: string;
+  codes: string[];
+};
+
 export type AppSettings = {
+  /** 界面主题：浅色 / 深色（黑白灰） */
+  theme: "light" | "dark";
   fontSizePx: number;
   visibleColumns: string[];
   panelMode: "normal" | "minimal";
@@ -15,6 +24,23 @@ export type AppSettings = {
   skipTaskbar: boolean;
   bossShortcut: string;
   watchlist: WatchItem[];
+  watchGroups: WatchGroup[];
+  /** 行情源：东财列表、`tencent` 腾讯行情（买一卖一/五档与常见 App 一致）、`mock` 本地模拟 */
+  quoteSource: "eastmoney" | "tencent" | "mock";
+};
+
+export type SuggestItem = {
+  code: string;
+  name: string;
+  quoteId: string;
+  /** 东财行业板块（f100），如「光伏设备」 */
+  sector?: string;
+  /** 东财现价（f2） */
+  price?: number;
+  /** 东财涨跌幅 %（f3） */
+  changePct?: number;
+  /** 东财股吧人气榜名次，仅人气推荐列表返回 */
+  rank?: number;
 };
 
 export type QuoteRow = {
@@ -34,6 +60,10 @@ export type QuoteRow = {
   low: number;
   bid1: number;
   ask1: number;
+  /** 买一量（手），列表/快照兜底五档用 */
+  bid1Vol?: number;
+  /** 卖一量（手） */
+  ask1Vol?: number;
 };
 
 export type ColumnDef = { id: string; label: string };
