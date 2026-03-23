@@ -58,9 +58,7 @@ const useBaselineLayout = computed(
     props.alignBidAskMidToBaseline &&
     !props.loading &&
     props.book != null &&
-    props.chartBaselineY != null &&
-    props.book.asks.length === 1 &&
-    props.book.bids.length === 1,
+    props.chartBaselineY != null,
 );
 
 function measureTopSpacer() {

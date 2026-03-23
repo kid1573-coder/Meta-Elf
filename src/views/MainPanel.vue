@@ -27,7 +27,10 @@ const { settings, loading, save, applyWindowPrefs } = useSettings();
 
 const codesForQuotes = computed(() => {
   const w = settings.value?.watchlist.map((x) => x.code) ?? [];
-  return [...new Set([...DEFAULT_QUOTE_CODES, ...w])];
+  if (w.length === 0) {
+    return [...DEFAULT_QUOTE_CODES];
+  }
+  return w;
 });
 const quoteSourceRef = computed(() => settings.value?.quoteSource ?? "eastmoney");
 
@@ -141,8 +144,9 @@ const visibleCols = computed(() => {
     return COLUMN_DEFS.filter((c) => c.id === "name");
   }
   const s = settings.value;
-  if (!s) return COLUMN_DEFS.filter((c) => ["name", "changePct", "price"].includes(c.id));
+  if (!s) return COLUMN_DEFS.filter((c) => ["name", "price", "changePct", "turnoverRate", "volume", "turnover"].includes(c.id));
   const set = new Set(s.visibleColumns);
+  // 保持 COLUMN_DEFS 中定义的顺序
   return COLUMN_DEFS.filter((c) => set.has(c.id));
 });
 
@@ -784,12 +788,13 @@ async function ctxMoveDown() {
                     >
                       {{ c.label }}
                     </th>
+                    <th class="filler"></th>
                   </tr>
                 </thead>
                 <tbody>
                   <template v-if="displayRows.length === 0">
                     <tr>
-                      <td :colspan="visibleCols.length" class="empty-msg">
+                      <td :colspan="visibleCols.length + 1" class="empty-msg">
                         {{ emptyTabHint }}
                       </td>
                     </tr>
@@ -822,6 +827,7 @@ async function ctxMoveDown() {
                         </span>
                         <span v-else>{{ cell(r, c.id) }}</span>
                       </td>
+                      <td class="filler"></td>
                     </tr>
                   </template>
                 </tbody>
@@ -996,7 +1002,7 @@ async function ctxMoveDown() {
  * 并排详情：左侧用固定窄轨（rem，不跟 vw 放大），把横向尽量留给主图；子级一律 100% 铺满该轨，避免百分比相对整行误算撑宽。
  */
 .panel-main--detail-open {
-  --yj-name-rail-w: 8.875rem;
+  --yj-name-rail-w: clamp(5.5rem, 12vw, 8.875rem);
 }
 
 .panel-main--detail-open .panel-main__primary {
@@ -1138,7 +1144,7 @@ async function ctxMoveDown() {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px 6px;
+  padding: 2px 8px;
   border-bottom: 1px solid var(--yj-titlebar-border);
   color: var(--yj-text);
   user-select: none;
@@ -1192,7 +1198,7 @@ async function ctxMoveDown() {
 .tab--add {
   flex-shrink: 0;
   min-width: 28px;
-  padding: 4px 8px;
+  padding: 2px 8px;
   font-weight: 600;
   line-height: 1;
 }
@@ -1210,7 +1216,7 @@ async function ctxMoveDown() {
   border: none;
   background: var(--yj-tab-bg);
   color: var(--yj-tab-color);
-  padding: 4px 10px;
+  padding: 2px 10px;
   border-radius: 999px;
   font-size: 0.78em;
   cursor: pointer;
@@ -1316,7 +1322,7 @@ async function ctxMoveDown() {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 0 6px 4px;
+  padding: 0 6px 2px;
 }
 
 .table-wrap {
@@ -1330,7 +1336,7 @@ async function ctxMoveDown() {
 
 .grid {
   width: 100%;
-  table-layout: fixed;
+  table-layout: auto;
   border-collapse: collapse;
   font-variant-numeric: tabular-nums;
   font-size: 0.88em;
@@ -1346,7 +1352,7 @@ async function ctxMoveDown() {
 
 .grid th,
 .grid td {
-  padding: 6px 8px;
+  padding: 4px 8px;
   text-align: left;
   white-space: nowrap;
   border-bottom: 1px solid var(--yj-row-border);
@@ -1365,24 +1371,35 @@ async function ctxMoveDown() {
 .grid th.num {
   text-align: right;
   font-family: "DM Sans", "Noto Sans SC", sans-serif;
+  width: 1%;
+  padding-left: 12px;
 }
 
 .grid td.num {
   text-align: right;
   font-family: "DM Sans", "Noto Sans SC", sans-serif;
+  width: 1%;
+  padding-left: 12px;
 }
 
 /* 名称列：固定窄宽 + ellipsis，其余列吃满剩余（小窗尤其明显） */
 .grid th.col-name,
 .grid td.col-name {
-  width: 6em;
+  width: 1%;
   max-width: 6em;
   min-width: 0;
   box-sizing: border-box;
-  padding-left: 6px;
+  padding-left: 8px;
   padding-right: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.grid th.filler,
+.grid td.filler {
+  width: auto;
+  padding: 0;
+  pointer-events: none;
 }
 
 /* 名称轨已锁窄：表格铺满轨宽，单列 fixed，过长省略（勿再用 max-content 把表缩在宽容器里） */
@@ -1424,7 +1441,7 @@ async function ctxMoveDown() {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 8px 6px;
+  padding: 0px 8px 2px;
   border-top: 1px solid var(--yj-toolbar-border);
 }
 

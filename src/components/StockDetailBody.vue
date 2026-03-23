@@ -13,7 +13,6 @@ import type {
   OrderBook,
 } from "../types/marketDetail";
 import {
-  chartIndicatorOptionsForTab,
   DEFAULT_CHART_INDICATOR_BY_TAB,
   normalizeIndicatorPresetForTab,
 } from "../constants/chartIndicatorPreset";
@@ -28,7 +27,6 @@ import { shouldShowStockDetailOrderBook } from "../utils/orderBookEligibility";
 import { displayStockName } from "../utils/stockDisplay";
 import OrderBookPanel from "./OrderBookPanel.vue";
 import StockChartPane from "./StockChartPane.vue";
-import YjSelect from "./YjSelect.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -136,19 +134,9 @@ watch(codeNorm, () => {
   indicatorPresetByTab.value = { ...DEFAULT_CHART_INDICATOR_BY_TAB };
 });
 
-const chartIndicatorOptions = computed(() => chartIndicatorOptionsForTab(chartTab.value));
-
 const paneIndicatorPreset = computed(() =>
   normalizeIndicatorPresetForTab(chartTab.value, indicatorPresetByTab.value[chartTab.value]),
 );
-
-function onIndicatorPresetPick(v: string) {
-  const tab = chartTab.value;
-  indicatorPresetByTab.value = {
-    ...indicatorPresetByTab.value,
-    [tab]: normalizeIndicatorPresetForTab(tab, v),
-  };
-}
 
 function dayStatTrend(curr: number, prev: number) {
   if (!Number.isFinite(curr) || !Number.isFinite(prev) || prev <= 0) return "flat" as const;
@@ -321,7 +309,7 @@ const alignOrderBookToBaseline = computed(() => {
   if (props.embedded && marketBlockWidth.value > 0 && marketBlockWidth.value < 440) return false;
   const b = orderBookForPanel.value;
   if (!b || bookLoading.value) return false;
-  return b.asks.length === 1 && b.bids.length === 1;
+  return true;
 });
 
 const intradayAuction = computed(() => intradaySeries.value?.auction ?? null);
@@ -491,15 +479,6 @@ const intradayAuctionDeltaLabel = computed(() => {
               >
                 {{ t.label }}
               </button>
-            </div>
-            <div class="chart-subtools">
-              <YjSelect
-                class="chart-indicator-select"
-                :model-value="paneIndicatorPreset"
-                :options="chartIndicatorOptions"
-                aria-label="图表指标"
-                @update:model-value="onIndicatorPresetPick"
-              />
             </div>
           </div>
           <div
@@ -952,36 +931,6 @@ const intradayAuctionDeltaLabel = computed(() => {
   margin-bottom: 0;
 }
 
-.chart-subtools {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 4px;
-  flex-shrink: 0;
-  min-width: 0;
-}
-
-.chart-indicator-select {
-  width: min(100%, 8rem);
-  min-width: 4.75rem;
-}
-
-/* 覆盖 App.vue 里 yj-select 的 8px/12px，与左侧周期 chip 同量级 */
-.chart-tabs-row .chart-indicator-select :deep(button.yj-field-control.yj-select-trigger) {
-  padding: 3px 8px;
-  font-size: 0.72em;
-  line-height: 1.25;
-  font-weight: 500;
-  border-radius: 6px;
-  gap: 4px;
-}
-
-.chart-tabs-row .chart-indicator-select :deep(.yj-select-trigger__chev) {
-  font-size: 0.62em;
-  opacity: 0.7;
-}
-
 .chart-tab {
   border-radius: 6px;
   border: 1px solid var(--yj-chip-border);
@@ -1335,16 +1284,6 @@ const intradayAuctionDeltaLabel = computed(() => {
 
   .chart-tabs {
     gap: 4px;
-  }
-
-  .chart-indicator-select {
-    width: min(100%, 7.25rem);
-    min-width: 4.5rem;
-  }
-
-  .chart-tabs-row .chart-indicator-select :deep(button.yj-field-control.yj-select-trigger) {
-    padding: 2px 7px;
-    font-size: 0.68em;
   }
 
   .chart-tab {

@@ -2,7 +2,6 @@ import type { ChartIndicatorPresetId, ChartTabId } from "../types/marketDetail";
 
 export const INTRADAY_CHART_INDICATOR_OPTIONS: { value: ChartIndicatorPresetId; label: string }[] = [
   { value: "i_none", label: "无" },
-  { value: "i_ai_extrema", label: "AI顶底" },
 ];
 
 /** 仅选副图/主图在 lightweight-charts 里层次清晰、标尺稳定的项 */

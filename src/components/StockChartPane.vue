@@ -45,7 +45,6 @@ import {
   buildIntradayAvgLineDataFromItems,
   buildIntradayChartItems,
 } from "../utils/intradayChartItems";
-import { computeIntradaySessionExtremaMarkers } from "../utils/intradayPivots";
 import { changeClass, fmtFixed } from "../utils/format";
 
 export type { ChartInlineStats };
@@ -176,17 +175,6 @@ const showInlineStrip = computed(
 
 const chartLegendVisible = computed(() => hasSeriesData.value && !props.loading);
 
-/** 分时：当前主图指标说明 */
-const intradaySubReadout = computed(() => {
-  if (props.chartTab !== "intraday" || !props.intraday?.points?.length) return null;
-  if (props.indicatorPreset === "i_ai_extrema") {
-    return {
-      title: "主图 · AI顶底",
-      hint: "日内显著高/低各至多 3 处，间隔≥8 分钟；仅供参考",
-    };
-  }
-  return null;
-});
 
 const klineMaReadout = computed(() => {
   if (props.chartTab === "intraday" || props.indicatorPreset !== "k_ma" || !props.kline?.points?.length) {
@@ -283,7 +271,7 @@ function syncIntradayAxisSlots() {
   const anchors = buildIntradayAxisAnchors(props.intraday.points);
   const w = el.clientWidth;
   const padL = 4;
-  const padR = 76;
+  const padR = 4;
   const next: { leftPx: number; label: string }[] = [];
   for (const a of anchors) {
     const c = ts.timeToCoordinate(a.unix as UTCTimestamp);
@@ -343,6 +331,8 @@ function rebuildChart() {
       secondsVisible: false,
       /* 避免 fitContent 后在最右侧留出「空白柱距」，图与右侧盘口之间像多出一截 */
       rightOffset: 0,
+      /* 允许滚动到最右侧时不留空隙 */
+      fixRightEdge: true,
       tickMarkFormatter: (time: Time) =>
         props.chartTab === "intraday"
           ? formatIntradayTickShanghai(time)
@@ -377,6 +367,36 @@ function rebuildChart() {
     const zeroAxisLineColor =
       props.theme === "light" ? "rgba(0, 0, 0, 0.12)" : "rgba(255, 255, 255, 0.16)";
 
+    let maxDiff = 0;
+    if (pre > 0) {
+      for (const pt of props.intraday.points) {
+        if (pt.close > 0) maxDiff = Math.max(maxDiff, Math.abs(pt.close - pre));
+        if (pt.avgPrice != null && pt.avgPrice > 0) maxDiff = Math.max(maxDiff, Math.abs(pt.avgPrice - pre));
+      }
+      if (maxDiff === 0) maxDiff = pre * 0.01;
+    }
+
+    const autoscaleInfoProvider = pre > 0 ? (original: () => any) => {
+      const res = original();
+      if (res !== null) {
+        const visibleMaxDiff = Math.max(
+          Math.abs(res.priceRange.maxValue - pre),
+          Math.abs(res.priceRange.minValue - pre)
+        );
+        // Ensure we don't collapse to zero if visible data is flat
+        const finalDiff = visibleMaxDiff > 0 ? visibleMaxDiff : maxDiff;
+        res.priceRange.minValue = pre - finalDiff;
+        res.priceRange.maxValue = pre + finalDiff;
+        return res;
+      }
+      return {
+        priceRange: {
+          minValue: pre - maxDiff,
+          maxValue: pre + maxDiff,
+        },
+      };
+    } : undefined;
+
     if (pre > 0) {
       const bl = chart.addBaselineSeries({
         baseValue: { type: "price", price: pre },
@@ -389,6 +409,7 @@ function rebuildChart() {
         topFillColor2: topFill2,
         bottomFillColor1: botFill1,
         bottomFillColor2: botFill2,
+        autoscaleInfoProvider,
       });
       intradayLineSeries.value = bl;
       bl.setData(lineData);
@@ -430,27 +451,17 @@ function rebuildChart() {
 
     const lineForMarkers = intradayLineSeries.value;
     if (lineForMarkers) {
-      if (props.indicatorPreset === "i_ai_extrema") {
-        const markers = computeIntradaySessionExtremaMarkers(props.intraday.points, {
-          countEach: 3,
-          minBarGap: 8,
-          colorTop: up,
-          colorBottom: down,
-        });
-        lineForMarkers.setMarkers(markers as SeriesMarker<Time>[]);
-      } else {
-        lineForMarkers.setMarkers([]);
-      }
+      lineForMarkers.setMarkers([]);
     }
 
     const mainLine = intradayLineSeries.value;
     if (mainLine) {
       mainLine.priceScale().applyOptions({
-        scaleMargins: { top: 0.06, bottom: 0.04 },
+        scaleMargins: { top: 0.05, bottom: 0.05 },
       });
     }
     chart.timeScale().fitContent();
-    chart.timeScale().applyOptions({ rightOffset: 0 });
+    chart.timeScale().applyOptions({ rightOffset: 0, fixRightEdge: true });
     tsVisibleRangeListener = () => {
       syncPrevCloseOverlay();
       syncIntradayAxisSlots();
@@ -656,7 +667,7 @@ function rebuildChart() {
       hist.setData(histData);
     }
     chart.timeScale().fitContent();
-    chart.timeScale().applyOptions({ rightOffset: 0 });
+    chart.timeScale().applyOptions({ rightOffset: 0, fixRightEdge: true });
   }
 }
 
@@ -721,9 +732,54 @@ onUnmounted(() => {
 <template>
   <div class="chart-pane">
     <div
+      v-if="showInlineStrip && inlineStats"
+      class="chart-pane__strip-header"
+      role="group"
+      aria-label="成交量额与换手率"
+    >
+      <div class="chart-pane__strip-item" :title="inlineStats.volumeHint ?? '成交量'">
+        <span class="chart-pane__strip-k">量</span>
+        <span class="chart-pane__strip-num">{{ inlineStats.volume }}</span>
+        <span
+          v-if="inlineStats.volumeTrend && inlineStats.volumeTrend !== 'flat'"
+          class="chart-pane__strip-arrow"
+          :class="stripTrendClass(inlineStats.volumeTrend)"
+          aria-hidden="true"
+        >{{ inlineStats.volumeTrend === "up" ? "↑" : "↓" }}</span>
+        <span v-if="inlineStats.yesterdayInline" class="chart-pane__strip-yest">
+          (昨 {{ inlineStats.yesterdayInline.volume }})
+        </span>
+      </div>
+      <div class="chart-pane__strip-item" :title="inlineStats.turnoverHint ?? '成交额'">
+        <span class="chart-pane__strip-k">额</span>
+        <span class="chart-pane__strip-num">{{ inlineStats.turnover }}</span>
+        <span
+          v-if="inlineStats.turnoverTrend && inlineStats.turnoverTrend !== 'flat'"
+          class="chart-pane__strip-arrow"
+          :class="stripTrendClass(inlineStats.turnoverTrend)"
+          aria-hidden="true"
+        >{{ inlineStats.turnoverTrend === "up" ? "↑" : "↓" }}</span>
+        <span v-if="inlineStats.yesterdayInline" class="chart-pane__strip-yest">
+          (昨 {{ inlineStats.yesterdayInline.turnover }})
+        </span>
+      </div>
+      <div class="chart-pane__strip-item" :title="inlineStats.turnoverRateHint ?? '换手率'">
+        <span class="chart-pane__strip-k">换手</span>
+        <span class="chart-pane__strip-num">{{ inlineStats.turnoverRate }}</span>
+        <span
+          v-if="inlineStats.turnoverRateTrend && inlineStats.turnoverRateTrend !== 'flat'"
+          class="chart-pane__strip-arrow"
+          :class="stripTrendClass(inlineStats.turnoverRateTrend)"
+          aria-hidden="true"
+        >{{ inlineStats.turnoverRateTrend === "up" ? "↑" : "↓" }}</span>
+        <span v-if="inlineStats.yesterdayInline" class="chart-pane__strip-yest">
+          (昨 {{ inlineStats.yesterdayInline.turnoverRate }})
+        </span>
+      </div>
+    </div>
+    <div
       ref="plotEl"
       class="chart-pane__plot"
-      :class="{ 'chart-pane__plot--strip': showInlineStrip }"
     >
       <div ref="rootEl" class="chart-pane__canvas" />
       <div
@@ -747,15 +803,6 @@ onUnmounted(() => {
         {{ intradayPrevCloseLabel }}
       </div>
 
-      <div
-        v-if="intradaySubReadout && chartLegendVisible"
-        class="chart-pane__legend chart-pane__legend--intraday"
-      >
-        <span class="chart-pane__legend-main">{{ intradaySubReadout.title }}</span>
-        <span v-if="intradaySubReadout.hint" class="chart-pane__legend-sub">{{
-          intradaySubReadout.hint
-        }}</span>
-      </div>
 
       <div
         v-if="
@@ -824,92 +871,6 @@ onUnmounted(() => {
           aria-label="RSI 数值"
         >
           <span class="chart-pane__legend-rsi">RSI(14) {{ fmtFixed(klineRsiReadout, 2) }}</span>
-        </div>
-      </div>
-    </div>
-    <div
-      v-if="showInlineStrip && inlineStats"
-      class="chart-pane__strip-wrap"
-      role="group"
-      aria-label="成交量额与换手率"
-    >
-      <div class="chart-pane__strip-grid">
-        <div class="chart-pane__strip-col chart-pane__strip-col--vol">
-          <div
-            class="chart-pane__strip-line"
-            :title="inlineStats.volumeHint ?? '成交量'"
-          >
-            <span class="chart-pane__strip-k">量</span>
-            <span class="chart-pane__strip-num">{{ inlineStats.volume }}</span>
-            <span
-              v-if="inlineStats.volumeTrend && inlineStats.volumeTrend !== 'flat'"
-              class="chart-pane__strip-arrow"
-              :class="stripTrendClass(inlineStats.volumeTrend)"
-              aria-hidden="true"
-              >{{ inlineStats.volumeTrend === "up" ? "↑" : "↓" }}</span
-            >
-          </div>
-          <div
-            v-if="inlineStats.yesterdayInline"
-            class="chart-pane__strip-line chart-pane__strip-line--yesterday"
-          >
-            <span class="chart-pane__strip-k">昨量</span>
-            <span class="chart-pane__strip-num">{{
-              inlineStats.yesterdayInline.volume
-            }}</span>
-          </div>
-        </div>
-        <div class="chart-pane__strip-col chart-pane__strip-col--amt">
-          <div
-            class="chart-pane__strip-line"
-            :title="inlineStats.turnoverHint ?? '成交额'"
-          >
-            <span class="chart-pane__strip-k">额</span>
-            <span class="chart-pane__strip-num">{{ inlineStats.turnover }}</span>
-            <span
-              v-if="inlineStats.turnoverTrend && inlineStats.turnoverTrend !== 'flat'"
-              class="chart-pane__strip-arrow"
-              :class="stripTrendClass(inlineStats.turnoverTrend)"
-              aria-hidden="true"
-              >{{ inlineStats.turnoverTrend === "up" ? "↑" : "↓" }}</span
-            >
-          </div>
-          <div
-            v-if="inlineStats.yesterdayInline"
-            class="chart-pane__strip-line chart-pane__strip-line--yesterday"
-          >
-            <span class="chart-pane__strip-k">昨额</span>
-            <span class="chart-pane__strip-num">{{
-              inlineStats.yesterdayInline.turnover
-            }}</span>
-          </div>
-        </div>
-        <div class="chart-pane__strip-col chart-pane__strip-col--tr">
-          <div
-            class="chart-pane__strip-line"
-            :title="inlineStats.turnoverRateHint ?? '换手率'"
-          >
-            <span class="chart-pane__strip-k">换手</span>
-            <span class="chart-pane__strip-num">{{ inlineStats.turnoverRate }}</span>
-            <span
-              v-if="
-                inlineStats.turnoverRateTrend && inlineStats.turnoverRateTrend !== 'flat'
-              "
-              class="chart-pane__strip-arrow"
-              :class="stripTrendClass(inlineStats.turnoverRateTrend)"
-              aria-hidden="true"
-              >{{ inlineStats.turnoverRateTrend === "up" ? "↑" : "↓" }}</span
-            >
-          </div>
-          <div
-            v-if="inlineStats.yesterdayInline"
-            class="chart-pane__strip-line chart-pane__strip-line--yesterday"
-          >
-            <span class="chart-pane__strip-k">昨换手</span>
-            <span class="chart-pane__strip-num">{{
-              inlineStats.yesterdayInline.turnoverRate
-            }}</span>
-          </div>
         </div>
       </div>
     </div>
@@ -1014,11 +975,6 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
-/* 与量/额/换手条同宽系，读数下移避免盖住顶栏三列 */
-.chart-pane__plot--strip .chart-pane__legend-stack {
-  top: 48px;
-}
-
 .chart-pane__legend {
   padding: 3px 8px;
   border-radius: 6px;
@@ -1047,10 +1003,6 @@ onUnmounted(() => {
   width: fit-content;
   max-width: min(18rem, calc(100% - 58px));
   box-sizing: border-box;
-}
-
-.chart-pane__plot--strip .chart-pane__legend--intraday {
-  top: 48px;
 }
 
 .chart-pane__legend-main {
@@ -1085,79 +1037,44 @@ onUnmounted(() => {
   font-weight: 500;
 }
 
-.chart-pane__strip-wrap {
-  position: absolute;
-  top: 5px;
-  left: 6px;
-  right: 52px;
-  z-index: 2;
-  pointer-events: none;
-}
-
-/* 三列：当日 / 昨日上下对齐，列内标签定宽使数字纵列对齐 */
-.chart-pane__strip-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
-  column-gap: 10px;
-  align-items: start;
-  font-size: 0.68em;
-  line-height: 1.35;
-  color: var(--yj-text-muted);
-  text-shadow: 0 1px 2px color-mix(in srgb, var(--yj-settings-bg-1) 85%, transparent);
-}
-
-.chart-pane__strip-col {
+.chart-pane__strip-header {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 4px 6px 2px;
+  font-size: 0.72em;
+  color: var(--yj-text-muted);
+  flex-shrink: 0;
 }
 
-.chart-pane__strip-line {
-  display: grid;
-  grid-template-columns: var(--strip-label-w, 2.35em) minmax(0, 1fr) auto;
+.chart-pane__strip-item {
+  display: flex;
   align-items: baseline;
-  column-gap: 3px;
-  font-family: "DM Sans", "Noto Sans SC", sans-serif;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.chart-pane__strip-col--vol {
-  --strip-label-w: 2.35em;
-}
-
-.chart-pane__strip-col--amt {
-  --strip-label-w: 2.35em;
-}
-
-.chart-pane__strip-col--tr {
-  --strip-label-w: 3.35em;
-}
-
-.chart-pane__strip-line--yesterday {
-  font-size: 0.91em;
-  line-height: 1.3;
-  opacity: 0.78;
+  gap: 3px;
 }
 
 .chart-pane__strip-k {
-  text-align: left;
   opacity: 0.88;
   font-weight: 500;
 }
 
 .chart-pane__strip-num {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-family: "DM Sans", "Noto Sans SC", sans-serif;
+  font-variant-numeric: tabular-nums;
 }
 
 .chart-pane__strip-arrow {
-  margin-left: 2px;
+  margin-left: 1px;
   font-weight: 700;
   font-size: 1.05em;
   line-height: 1;
+}
+
+.chart-pane__strip-yest {
+  opacity: 0.65;
+  font-size: 0.95em;
+  margin-left: 2px;
 }
 
 .chart-pane__strip-arrow.up-red {

@@ -46,22 +46,21 @@ body,
   overflow: hidden;
 }
 
-/* 挂载前兜底；与深色外缘一致 */
+/* 挂载前兜底；设为透明以支持圆角窗口 */
 html,
 #app {
-  background-color: #0d0d0d;
+  background-color: transparent;
 }
 
 /*
- * 透明窗口下 .yj-root 圆角会裁出四角「空洞」。yj-shell 铺满窗口并铺实色底，
- * 圆角外透出的是 shell，与面板边缘同色，避免露桌面 / WebView 默认底。
+ * 设为透明，让 .yj-root 的圆角真正生效，四角透出桌面
  */
 .yj-shell[data-theme="dark"] {
-  background-color: #0d0d0d;
+  background-color: transparent;
 }
 
 .yj-shell[data-theme="light"] {
-  background-color: #ececec;
+  background-color: transparent;
 }
 
 body {
@@ -147,10 +146,6 @@ html:has(.yj-shell[data-theme="light"]) {
   --yj-btn-primary-color: #0a0a0a;
   background: linear-gradient(145deg, #121212 0%, #1a1a1a 52%, #0d0d0d 100%);
   backdrop-filter: blur(18px) saturate(0.85);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 12px;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 /* ========== 浅色：黑白灰 ========== */
@@ -220,10 +215,6 @@ html:has(.yj-shell[data-theme="light"]) {
   --yj-btn-primary-color: #fafafa;
   background: linear-gradient(145deg, #ffffff 0%, #f7f7f7 52%, #eeeeee 100%);
   backdrop-filter: blur(18px) saturate(0.9);
-  border: 1px solid rgba(0, 0, 0, 0.1);
-  border-radius: 12px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.12),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
 .yj-root {

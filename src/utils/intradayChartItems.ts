@@ -74,7 +74,7 @@ export function buildIntradayChartItems(points: IntradayPoint[]): IntradayChartI
 }
 
 /**
- * 分时底部固定锚点 + 最后一根 K 时间（与沪深常规时段对齐；收盘多为 15:00，以数据为准）。
+ * 分时底部固定锚点 + 最后一根 K 时间（与沪深常规时段对齐；收盘多为 15:00）。
  */
 export function buildIntradayAxisAnchors(points: IntradayPoint[]): { unix: number; label: string }[] {
   if (points.length === 0) return [];
@@ -84,12 +84,21 @@ export function buildIntradayAxisAnchors(points: IntradayPoint[]): { unix: numbe
   const ymd = shanghaiYmdString(first);
   const wall = (h: number, m: number) => shanghaiWallUnixSec(ymd, h, m);
   const lab = (h: number, m: number) => `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-  return [
+  const anchors = [
     { unix: wall(9, 30), label: lab(9, 30) },
     { unix: wall(11, 30), label: lab(11, 30) },
     { unix: wall(13, 0), label: lab(13, 0) },
-    { unix: last, label: formatIntradayAxisHHmm(last) },
+    { unix: wall(15, 0), label: lab(15, 0) },
   ];
+  
+  // 如果最新时间不在锚点上，且距离锚点有一定距离，则加上最新时间
+  const isNearAnchor = anchors.some((a) => Math.abs(a.unix - last) < 60);
+  if (!isNearAnchor && last < wall(15, 0)) {
+    anchors.push({ unix: last, label: formatIntradayAxisHHmm(last) });
+  }
+  
+  // 按照时间排序
+  return anchors.sort((a, b) => a.unix - b.unix);
 }
 
 export function buildIntradayAvgLineDataFromItems(

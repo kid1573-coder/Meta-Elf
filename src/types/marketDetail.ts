@@ -64,7 +64,6 @@ export type ChartTabId = "intraday" | "day" | "week" | "month";
  */
 export type ChartIndicatorPresetId =
   | "i_none"
-  | "i_ai_extrema"
   | "k_vol"
   | "k_macd"
   | "k_kdj"

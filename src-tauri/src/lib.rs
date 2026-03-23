@@ -78,6 +78,22 @@ fn migrate_watch_groups(settings: &mut AppSettings) {
     }
 }
 
+fn migrate_visible_columns(settings: &mut AppSettings) {
+    // 如果用户保存的依然是旧的默认列，则自动升级为新的紧凑短线默认列
+    let old_default_1 = vec!["name", "changePct", "price", "prevClose", "open"];
+    let old_default_2 = vec!["name", "price", "changePct", "prevClose", "open"];
+    if settings.visible_columns == old_default_1 || settings.visible_columns == old_default_2 {
+        settings.visible_columns = vec![
+            "name".into(),
+            "price".into(),
+            "changePct".into(),
+            "turnoverRate".into(),
+            "volume".into(),
+            "turnover".into(),
+        ];
+    }
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         let watchlist = vec![
@@ -96,10 +112,11 @@ impl Default for AppSettings {
             font_size_px: 14,
             visible_columns: vec![
                 "name".into(),
-                "changePct".into(),
                 "price".into(),
-                "prevClose".into(),
-                "open".into(),
+                "changePct".into(),
+                "turnoverRate".into(),
+                "volume".into(),
+                "turnover".into(),
             ],
             panel_mode: "normal".into(),
             auto_hide_edge: true,
@@ -144,6 +161,7 @@ fn load_settings_inner() -> Result<AppSettings, String> {
     let raw = fs::read_to_string(&path).map_err(|e| e.to_string())?;
     let mut s: AppSettings = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
     migrate_watch_groups(&mut s);
+    migrate_visible_columns(&mut s);
     Ok(s)
 }
 

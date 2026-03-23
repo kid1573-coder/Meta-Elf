@@ -165,12 +165,17 @@ onUnmounted(() => {
         <div class="market-ribbon__track">
           <template v-for="dup in 2" :key="'d' + dup">
             <template v-for="(s, i) in indices" :key="dup + '-' + i">
-              <span class="market-ribbon__index-name">{{ s.name }}</span>
-              <span
-                class="market-ribbon__index-pct"
-                :class="changeClass(s.changePct, colorScheme)"
+              <span 
+                class="market-ribbon__index-item"
+                :class="{ 'market-ribbon__index-item--alert': Math.abs(s.changePct) >= 2.0 }"
               >
-                {{ s.changePct >= 0 ? "+" : "" }}{{ fmtFixed(s.changePct, 2) }}%
+                <span class="market-ribbon__index-name">{{ s.name }}</span>
+                <span
+                  class="market-ribbon__index-pct"
+                  :class="changeClass(s.changePct, colorScheme)"
+                >
+                  {{ s.changePct >= 0 ? "+" : "" }}{{ fmtFixed(s.changePct, 2) }}%
+                </span>
               </span>
               <span class="market-ribbon__dot" aria-hidden="true">·</span>
             </template>
@@ -183,22 +188,34 @@ onUnmounted(() => {
       v-if="snapshot && useInlineStats && !hideBreadthStats"
       class="market-ribbon__stats market-ribbon__stats--inline"
     >
-      <span class="market-ribbon__breadth" :class="changeClass(1, colorScheme)">
-        涨{{ snapshot.upCount }}家
-      </span>
-      <span class="market-ribbon__breadth" :class="changeClass(-1, colorScheme)">
-        跌{{ snapshot.downCount }}家
-      </span>
-      <span class="market-ribbon__v" aria-hidden="true">|</span>
-      <span class="market-ribbon__muted">成交额</span>
-      <span class="market-ribbon__val">{{ fmtTurnoverCn(snapshot.turnoverToday) }}</span>
-      <span class="market-ribbon__v" aria-hidden="true">|</span>
-      <span class="market-ribbon__cmp-yday">
-        <span class="market-ribbon__muted">较昨日</span>
-        <span class="market-ribbon__delta" :class="deltaClass">
-          {{ fmtDeltaTurnoverCn(deltaYuan) }}
+      <button
+        type="button"
+        class="market-ribbon__stats-toggle market-ribbon__stats-toggle--inline"
+        :class="{ 'market-ribbon__stats-toggle--open': statsOpen }"
+        title="展开/收起市场统计"
+        aria-label="展开/收起市场统计"
+        @click="statsOpen = !statsOpen"
+      >
+        <span class="market-ribbon__stats-toggle-icon">▼</span>
+      </button>
+      <template v-if="statsOpen">
+        <span class="market-ribbon__breadth" :class="changeClass(1, colorScheme)">
+          涨{{ snapshot.upCount }}家
         </span>
-      </span>
+        <span class="market-ribbon__breadth" :class="changeClass(-1, colorScheme)">
+          跌{{ snapshot.downCount }}家
+        </span>
+        <span class="market-ribbon__v" aria-hidden="true">|</span>
+        <span class="market-ribbon__muted">成交额</span>
+        <span class="market-ribbon__val">{{ fmtTurnoverCn(snapshot.turnoverToday) }}</span>
+        <span class="market-ribbon__v" aria-hidden="true">|</span>
+        <span class="market-ribbon__cmp-yday">
+          <span class="market-ribbon__muted">较昨日</span>
+          <span class="market-ribbon__delta" :class="deltaClass">
+            {{ fmtDeltaTurnoverCn(deltaYuan) }}
+          </span>
+        </span>
+      </template>
     </div>
 
     <button
@@ -212,7 +229,7 @@ onUnmounted(() => {
       :aria-expanded="statsOpen"
       @click="onToggleStats"
     >
-      ▼
+      <span class="market-ribbon__stats-toggle-icon">▼</span>
     </button>
 
     <Teleport to="#yj-root">
@@ -282,7 +299,7 @@ onUnmounted(() => {
   display: inline-flex;
   flex-wrap: nowrap;
   align-items: baseline;
-  gap: 0 6px;
+  gap: 0 2px;
   width: max-content;
   animation: ribbon-marquee 52s linear infinite;
 }
@@ -297,6 +314,28 @@ onUnmounted(() => {
   }
   to {
     transform: translateX(-50%);
+  }
+}
+
+.market-ribbon__index-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 0 4px;
+  border-radius: 4px;
+  transition: background-color 0.3s ease;
+}
+
+.market-ribbon__index-item--alert {
+  animation: ribbon-alert-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes ribbon-alert-pulse {
+  0%, 100% {
+    background-color: transparent;
+  }
+  50% {
+    background-color: color-mix(in srgb, var(--yj-text, #fff) 12%, transparent);
   }
 }
 
@@ -391,7 +430,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   opacity: 0.88;
-  transition: opacity 0.15s ease, transform 0.15s ease;
+  transition: opacity 0.15s ease;
 }
 
 .market-ribbon__stats-toggle:hover {
@@ -400,6 +439,24 @@ onUnmounted(() => {
 }
 
 .market-ribbon__stats-toggle--open {
+  /* 移除这里的 transform，交给内部的 icon 处理 */
+}
+
+.market-ribbon__stats-toggle--inline {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  font-size: 0.6em;
+  margin-left: 0;
+  margin-right: 8px;
+}
+
+.market-ribbon__stats-toggle-icon {
+  display: inline-block;
+  transition: transform 0.2s ease;
+}
+
+.market-ribbon__stats-toggle--open .market-ribbon__stats-toggle-icon {
   transform: rotate(180deg);
 }
 
@@ -407,7 +464,9 @@ onUnmounted(() => {
   padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid var(--yj-table-wrap-border, rgba(255, 255, 255, 0.14));
-  background: var(--yj-table-wrap-bg, #2a2a2e);
+  background: var(--yj-ctx-menu-bg, #2a2a2e);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
   font-size: 0.88em;
   line-height: 1.35;

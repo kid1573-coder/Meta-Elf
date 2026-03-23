@@ -14,9 +14,9 @@
       {
         "label": "main",
         "title": "元精灵",
-        "width": 540,
+        "width": 640,
         "height": 380,
-        "minWidth": 360,
+        "minWidth": 240,
         "minHeight": 260,
         "resizable": true,
         "decorations": false,

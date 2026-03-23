@@ -21,10 +21,22 @@ export function useQuotes(
     }
     try {
       err.value = null;
-      rows.value = await invoke<QuoteRow[]>("get_quotes", {
+      const newRows = await invoke<QuoteRow[]>("get_quotes", {
         codes: c,
         quoteSource: src,
       });
+      // Merge with existing rows to prevent jumping to 0 on temporary API failures
+      if (rows.value.length > 0) {
+        rows.value = newRows.map(newRow => {
+          if (Math.abs(newRow.price) < 1e-9 && Math.abs(newRow.prevClose) < 1e-9 && newRow.volume === 0) {
+            const oldRow = rows.value.find(r => r.code === newRow.code);
+            if (oldRow) return oldRow;
+          }
+          return newRow;
+        });
+      } else {
+        rows.value = newRows;
+      }
     } catch (e) {
       err.value = String(e);
     }

@@ -107,28 +107,7 @@ fn row(code: &str, name: &str, price: f64, change_pct: f64) -> QuoteRow {
 
 impl QuoteProvider for MockQuoteProvider {
     fn fetch(&self) -> Vec<QuoteRow> {
-        let mut rng = rand::thread_rng();
-        self
-            .base
-            .iter()
-            .map(|r| {
-                let jitter: f64 = rng.gen_range(-0.08..0.08);
-                let change_pct = r.change_pct + jitter;
-                let price = r.prev_close * (1.0 + change_pct / 100.0);
-                QuoteRow {
-                    price,
-                    change_pct,
-                    high: price * 1.006,
-                    low: price * 0.997,
-                    bid1: (price - 0.02).max(0.01),
-                    ask1: price + 0.02,
-                    bid1_vol: rng.gen_range(5_000u64..80_000),
-                    ask1_vol: rng.gen_range(5_000u64..80_000),
-                    daily_pl: r.daily_pl + rng.gen_range(-5.0..5.0),
-                    ..r.clone()
-                }
-            })
-            .collect()
+        self.base.clone()
     }
 }
 
@@ -180,7 +159,7 @@ fn em_client() -> Result<reqwest::Client, String> {
     );
     headers.insert(
         REFERER,
-        HeaderValue::from_static("https://quote.eastmoney.com/"),
+        HeaderValue::from_static("http://quote.eastmoney.com/"),
     );
     reqwest::Client::builder()
         .default_headers(headers)
@@ -217,6 +196,12 @@ pub fn code_to_secid(code: &str) -> Option<String> {
     // 恒生指数：WAP/行情页多为 `100.HSI`；`116.HSI` 为部分旧接口，见 `fetch_hk_hsi_em` 回退
     if c == "hkhsi" {
         return Some("100.HSI".into());
+    }
+    if c == "fsa50" {
+        return Some("104.CN00Y".into());
+    }
+    if c == "ndx" {
+        return Some("100.NDX".into());
     }
     let (prefix, num) = if let Some(rest) = c.strip_prefix("sh") {
         ("1", rest)
@@ -256,6 +241,15 @@ fn internal_to_quote_id(code: &str) -> Option<String> {
 /// 内部 `sh601899` / `sz002309` / `bj920174` → `ulist` 的 `secids` 段（与 `em_guba_sc_to_ulist_sec` 一致）
 fn internal_code_to_ulist_sec(code: &str) -> Option<String> {
     let c = code.trim().to_lowercase();
+    if c == "hkhsi" {
+        return Some("100.HSI".into());
+    }
+    if c == "fsa50" {
+        return Some("104.CN00Y".into());
+    }
+    if c == "ndx" {
+        return Some("100.NDX".into());
+    }
     let (head, num_raw) = if let Some(r) = c.strip_prefix("sh") {
         ("SH", r)
     } else if let Some(r) = c.strip_prefix("sz") {
@@ -339,7 +333,7 @@ async fn attach_sectors_ulist(client: &reqwest::Client, items: &mut [SuggestItem
     }
     let secids = marks.join(",");
     let list_url = format!(
-        "https://push2.eastmoney.com/api/qt/ulist.np/get?ut=f057cbcbce2a86e2866ab8877db1d059&fltt=2&invt=2&fields=f12,f100,f2,f3&secids={}",
+        "http://push2.eastmoney.com/api/qt/ulist.np/get?ut=f057cbcbce2a86e2866ab8877db1d059&fltt=2&invt=2&fields=f12,f100,f2,f3&secids={}",
         urlencoding::encode(&secids)
     );
     let Ok(res) = client.get(&list_url).send().await else {
@@ -532,6 +526,12 @@ fn code_digits_match_f12(internal_lower: &str, f12: &str) -> bool {
     if internal_lower == "hkhsi" && t.eq_ignore_ascii_case("HSI") {
         return true;
     }
+    if internal_lower == "fsa50" && t.eq_ignore_ascii_case("CN00Y") {
+        return true;
+    }
+    if internal_lower == "ndx" && t.eq_ignore_ascii_case("NDX") {
+        return true;
+    }
     let digits: String = internal_lower
         .chars()
         .filter(|c| c.is_ascii_digit())
@@ -638,7 +638,7 @@ async fn fetch_quotes_eastmoney_ulist(
             .collect::<Vec<_>>()
             .join(",");
         let url = format!(
-            "https://push2.eastmoney.com/api/qt/ulist.np/get?ut=f057cbcbce2a86e2866ab8877db1d059&fltt=2&invt=2&fields={}&secids={}",
+            "http://push2.eastmoney.com/api/qt/ulist.np/get?ut=f057cbcbce2a86e2866ab8877db1d059&fltt=2&invt=2&fields={}&secids={}",
             ULIST_QUOTE_FIELDS,
             urlencoding::encode(&secids)
         );
@@ -646,12 +646,23 @@ async fn fetch_quotes_eastmoney_ulist(
             .get(&url)
             .send()
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| {
+                println!("ulist reqwest error: {}", e);
+                e.to_string()
+            })?
             .text()
             .await
-            .map_err(|e| e.to_string())?;
-        let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                println!("ulist text error: {}", e);
+                e.to_string()
+            })?;
+        // println!("ulist response: {}", text);
+        let v: Value = serde_json::from_str(&text).map_err(|e| {
+            println!("ulist json error: {}", e);
+            e.to_string()
+        })?;
         if v.get("rc").and_then(|x| x.as_i64()).unwrap_or(-1) != 0 {
+            println!("ulist rc != 0: {}", text);
             return Err("东财 ulist 行情 rc!=0".into());
         }
         let diff = v
@@ -772,7 +783,7 @@ const HK_HSI_STOCK_GET_SECIDS: &[&str] = &["100.HSI", "116.HSI"];
 async fn fetch_hk_hsi_em(client: &reqwest::Client) -> QuoteRow {
     for secid in HK_HSI_STOCK_GET_SECIDS {
         let url = format!(
-            "https://push2.eastmoney.com/api/qt/stock/get?invt=2&fltt=2&secid={}&fields={}",
+            "http://push2.eastmoney.com/api/qt/stock/get?invt=2&fltt=2&secid={}&fields={}",
             urlencoding::encode(secid),
             STOCK_GET_FIELDS
         );
@@ -805,25 +816,38 @@ async fn fetch_one_em(client: &reqwest::Client, internal_code: &str) -> QuoteRow
         return error_row(internal_code, "代码格式无效");
     };
     let url = format!(
-        "https://push2.eastmoney.com/api/qt/stock/get?invt=2&fltt=2&secid={}&fields={}",
+        "http://push2.eastmoney.com/api/qt/stock/get?invt=2&fltt=2&secid={}&fields={}",
         urlencoding::encode(&secid),
         STOCK_GET_FIELDS
     );
     let res = match client.get(&url).send().await {
         Ok(r) => r,
-        Err(e) => return error_row(internal_code, &e.to_string()),
+        Err(e) => {
+            println!("fetch_one_em reqwest error for {}: {}", internal_code, e);
+            return error_row(internal_code, &e.to_string());
+        }
     };
     let text = match res.text().await {
         Ok(t) => t,
-        Err(e) => return error_row(internal_code, &e.to_string()),
+        Err(e) => {
+            println!("fetch_one_em text error for {}: {}", internal_code, e);
+            return error_row(internal_code, &e.to_string());
+        }
     };
+    // println!("fetch_one_em response for {}: {}", internal_code, text);
     let v: Value = match serde_json::from_str(&text) {
         Ok(j) => j,
-        Err(e) => return error_row(internal_code, &e.to_string()),
+        Err(e) => {
+            println!("fetch_one_em json error for {}: {}", internal_code, e);
+            return error_row(internal_code, &e.to_string());
+        }
     };
     match parse_em_stock_json(internal_code, &v) {
         Ok(row) => row,
-        Err(e) => error_row(internal_code, &e),
+        Err(e) => {
+            println!("fetch_one_em parse error for {}: {}", internal_code, e);
+            error_row(internal_code, &e)
+        }
     }
 }
 
@@ -1038,7 +1062,7 @@ pub async fn fetch_hot_stocks_eastmoney(limit: usize) -> Result<Vec<SuggestItem>
 
     let secids = marks.join(",");
     let list_url = format!(
-        "https://push2.eastmoney.com/api/qt/ulist.np/get?ut=f057cbcbce2a86e2866ab8877db1d059&fltt=2&invt=2&fields=f12,f14,f100,f2,f3&secids={}",
+        "http://push2.eastmoney.com/api/qt/ulist.np/get?ut=f057cbcbce2a86e2866ab8877db1d059&fltt=2&invt=2&fields=f12,f14,f100,f2,f3&secids={}",
         urlencoding::encode(&secids)
     );
     let list_text = client
@@ -1093,10 +1117,6 @@ fn name_looks_like_raw_code(name: &str, code: &str) -> bool {
 
 /// 东财失败或返回空行情时，用同代码的 Mock 行兜底；名称仍像代码时用 Mock 中文名
 fn merge_em_row_with_mock(em: QuoteRow, mock: &QuoteRow) -> QuoteRow {
-    let em_dead = em.price.abs() < 1e-9 && em.prev_close.abs() < 1e-9 && em.volume == 0;
-    if em_dead && mock.price > 1e-9 {
-        return mock.clone();
-    }
     let mut out = em;
     if name_looks_like_raw_code(&out.name, &out.code)
         && !name_looks_like_raw_code(&mock.name, &mock.code)
@@ -1107,11 +1127,19 @@ fn merge_em_row_with_mock(em: QuoteRow, mock: &QuoteRow) -> QuoteRow {
 }
 
 pub async fn get_quotes_impl(codes: Vec<String>, quote_source: &str) -> Result<Vec<QuoteRow>, String> {
+    println!("get_quotes_impl called with source: {}", quote_source);
     match quote_source {
         "mock" => Ok(mock_for_codes(&codes)),
         "tencent" => fetch_quotes_tencent(&codes).await,
         _ => {
-            let em_rows = fetch_quotes_eastmoney(&codes).await?;
+            let em_rows = match fetch_quotes_eastmoney(&codes).await {
+                Ok(rows) => rows,
+                Err(e) => {
+                    println!("fetch_quotes_eastmoney failed: {}", e);
+                    return Err(e);
+                }
+            };
+            println!("em_rows: {:?}", em_rows);
             let mock_rows = mock_for_codes(&codes);
             let merged: Vec<QuoteRow> = em_rows
                 .into_iter()
@@ -1764,7 +1792,7 @@ async fn fetch_intraday_eastmoney(client: &reqwest::Client, internal_code: &str)
     };
     // iscr=1：含 9:15–9:25 竞价轨迹；fields1 扩到 f20 以带上 tradePeriods 等
     let url_today = format!(
-        "https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid={}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13,f14,f15,f16,f17,f18,f19,f20&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&iscr=1&ndays=1",
+        "http://push2his.eastmoney.com/api/qt/stock/trends2/get?secid={}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13,f14,f15,f16,f17,f18,f19,f20&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&iscr=1&ndays=1",
         urlencoding::encode(&secid)
     );
     let text = match client.get(&url_today).send().await {
@@ -1803,7 +1831,7 @@ async fn fetch_intraday_eastmoney(client: &reqwest::Client, internal_code: &str)
     });
     if let Some(ref mut a) = series.auction {
         let url_2d = format!(
-            "https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid={}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13,f14,f15,f16,f17,f18,f19,f20&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&iscr=1&ndays=2",
+            "http://push2his.eastmoney.com/api/qt/stock/trends2/get?secid={}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13,f14,f15,f16,f17,f18,f19,f20&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&iscr=1&ndays=2",
             urlencoding::encode(&secid)
         );
         if let Ok(r2) = client.get(&url_2d).send().await {
@@ -1902,7 +1930,7 @@ async fn fetch_kline_eastmoney(
     };
     let klt = klt_for_period(period);
     let url = format!(
-        "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt={}&fqt=1&lmt=180&end=20500101",
+        "http://push2his.eastmoney.com/api/qt/stock/kline/get?secid={}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt={}&fqt=1&lmt=180&end=20500101",
         urlencoding::encode(&secid),
         klt
     );
@@ -1929,7 +1957,7 @@ async fn fetch_order_book_eastmoney(client: &reqwest::Client, internal_code: &st
         };
     };
     let url = format!(
-        "https://push2.eastmoney.com/api/qt/stock/get?invt=2&fltt=2&secid={}&fields={}",
+        "http://push2.eastmoney.com/api/qt/stock/get?invt=2&fltt=2&secid={}&fields={}",
         urlencoding::encode(&secid),
         ORDER_BOOK_FIELDS
     );
@@ -1998,11 +2026,18 @@ fn mock_intraday_for_code(code: &str) -> IntradaySeries {
     let mut points = Vec::new();
     let mut sum_turn = 0.0_f64;
     let mut sum_lots = 0u64;
+    
+    let mut current_price = base.open;
+    if current_price < 1e-9 {
+        current_price = pre;
+    }
+
     // 上午 9:30–11:30、下午 13:00–15:00（各 121 根分钟），中间无数据 → 前端插入午休断点
     for i in 0..121 {
         let ts = am_start + i as i64 * 60;
-        let jitter: f64 = rng.gen_range(-0.02..0.02);
-        let close = base.price * (1.0 + jitter);
+        let jitter: f64 = rng.gen_range(-0.002..0.002);
+        current_price = current_price * (1.0 + jitter);
+        let close = current_price;
         let vol = rng.gen_range(10_000u64..200_000);
         let turnover: f64 = rng.gen_range(5e6..8e7);
         sum_turn += turnover;
@@ -2025,8 +2060,9 @@ fn mock_intraday_for_code(code: &str) -> IntradaySeries {
     }
     for i in 0..121 {
         let ts = pm_start + i as i64 * 60;
-        let jitter: f64 = rng.gen_range(-0.02..0.02);
-        let close = base.price * (1.0 + jitter);
+        let jitter: f64 = rng.gen_range(-0.002..0.002);
+        current_price = current_price * (1.0 + jitter);
+        let close = current_price;
         let vol = rng.gen_range(10_000u64..200_000);
         let turnover: f64 = rng.gen_range(5e6..8e7);
         sum_turn += turnover;
@@ -2195,7 +2231,7 @@ async fn fetch_index_yesterday_turnover_from_kline(
         return 0.0;
     };
     let url = format!(
-        "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt=1&lmt=8&end=20500101",
+        "http://push2his.eastmoney.com/api/qt/stock/kline/get?secid={}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt=1&lmt=8&end=20500101",
         urlencoding::encode(&secid)
     );
     let text = match client.get(&url).send().await {
@@ -2231,7 +2267,7 @@ async fn fetch_market_breadth_up_down(client: &reqwest::Client) -> (u32, u32) {
     let mut down: u64 = 0;
     for secid in ["1.000001", "0.399001"] {
         let url = format!(
-            "https://push2.eastmoney.com/api/qt/stock/get?invt=2&fltt=2&secid={}&fields=f104,f105",
+            "http://push2.eastmoney.com/api/qt/stock/get?invt=2&fltt=2&secid={}&fields=f104,f105",
             secid
         );
         let text = match client.get(&url).send().await {
@@ -2261,23 +2297,50 @@ const RIBBON_MAJOR_INDICES: &[(&str, &str)] = &[
     ("sz399006", "创业板"),
     ("sh000688", "科创50"),
     ("hkhsi", "恒生"),
+    ("fsa50", "富时A50"),
+    ("ndx", "纳斯达克"),
 ];
 
 async fn fetch_ribbon_major_indices(client: &reqwest::Client) -> Vec<RibbonIndexItem> {
-    // 港股指数勿进 ulist 批量：易拖垮整批或 `f2` 解析与 A 股不一致
+    // 港股/全球指数勿进 ulist 批量：易拖垮整批或 `f2` 解析与 A 股不一致
     let codes_ulist: Vec<String> = RIBBON_MAJOR_INDICES
         .iter()
-        .filter(|(c, _)| !c.eq_ignore_ascii_case("hkhsi"))
+        .filter(|(c, _)| {
+            let k = c.to_lowercase();
+            k != "hkhsi" && k != "fsa50" && k != "ndx"
+        })
         .map(|(c, _)| (*c).to_string())
         .collect();
     let map = fetch_quotes_eastmoney_ulist(client, &codes_ulist)
         .await
         .unwrap_or_default();
+    
+    // 单独拉取海外指数
+    let overseas_map = fetch_quotes_eastmoney_ulist(client, &["fsa50".into(), "ndx".into(), "hkhsi".into()])
+        .await
+        .unwrap_or_default();
+
     let mut out = Vec::with_capacity(RIBBON_MAJOR_INDICES.len());
     for (code, label) in RIBBON_MAJOR_INDICES {
         let k = code.to_lowercase();
         let change_pct = if k == "hkhsi" {
-            fetch_hk_hsi_em(client).await.change_pct
+            if let Some(q) = overseas_map.get("hkhsi") {
+                q.change_pct
+            } else {
+                fetch_hk_hsi_em(client).await.change_pct
+            }
+        } else if k == "fsa50" {
+            if let Some(q) = overseas_map.get("fsa50") {
+                q.change_pct
+            } else {
+                fetch_one_em(client, code).await.change_pct
+            }
+        } else if k == "ndx" {
+            if let Some(q) = overseas_map.get("ndx") {
+                q.change_pct
+            } else {
+                fetch_one_em(client, code).await.change_pct
+            }
         } else if let Some(q) = map.get(&k) {
             q.change_pct
         } else {
@@ -2443,7 +2506,7 @@ async fn fetch_stock_changes_type(
     type_param: &str,
 ) -> Result<Vec<(i64, i64, MarketMoveItem)>, String> {
     let url = format!(
-        "https://push2ex.eastmoney.com/getAllStockChanges?type={}&pageindex=0&pagesize=120&ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wzchanges",
+        "http://push2ex.eastmoney.com/getAllStockChanges?type={}&pageindex=0&pagesize=120&ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wzchanges",
         type_param
     );
     let resp = client
