@@ -281,6 +281,27 @@ const orderBookForPanel = computed((): OrderBook | null => {
       }
     }
   }
+  /* 接口偶发只给一侧档位时，上面会直接 return，买/卖一缺失；用列表 f19/f31 快照补全 */
+  if (b && r) {
+    let bids = b.bids;
+    let asks = b.asks;
+    if (bids.length === 0 && r.bid1 > 0 && Number.isFinite(r.bid1)) {
+      const bv = Math.max(0, Math.round(r.bid1Vol ?? 0));
+      bids = [{ price: r.bid1, volume: bv }];
+    }
+    if (asks.length === 0 && r.ask1 > 0 && Number.isFinite(r.ask1)) {
+      const av = Math.max(0, Math.round(r.ask1Vol ?? 0));
+      asks = [{ price: r.ask1, volume: av }];
+    }
+    if (bids !== b.bids || asks !== b.asks) {
+      b = {
+        ...b,
+        bids,
+        asks,
+        maxLevels: Math.max(b.maxLevels ?? 1, 1),
+      };
+    }
+  }
   if (b && (b.asks.length > 0 || b.bids.length > 0)) return b;
   if (!showBookColumn.value) return b;
   if (!r) return b;
@@ -1158,7 +1179,9 @@ const intradayAuctionDeltaLabel = computed(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* 顶 spacer 与零轴对齐时偶发超出高度，hidden 会裁掉买一档；允许纵向滚动兜底 */
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 /* 窄抽屉：盘口叠在图下 */

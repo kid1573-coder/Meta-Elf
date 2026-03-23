@@ -1,5 +1,5 @@
+import type { Time, UTCTimestamp } from "lightweight-charts";
 import type { IntradayPoint } from "../types/marketDetail";
-import { formatIntradayAxisHHmm } from "./chartTime";
 
 export type IntradayChartItem =
   | { kind: "bar"; p: IntradayPoint }
@@ -74,17 +74,60 @@ export function buildIntradayChartItems(points: IntradayPoint[]): IntradayChartI
 }
 
 /**
- * 分时底部固定锚点 + 最后一根 K 时间（与沪深常规时段对齐；收盘多为 15:00）。
+ * 分时横轴固定为 A 股完整展示时段（上海 09:15 集合竞价起～15:00 收盘），与常见行情一致：未到时刻留白，不「走到哪算到哪」。
+ */
+export function intradaySessionVisibleRangeUnix(
+  points: IntradayPoint[],
+): { from: number; to: number } | null {
+  if (points.length === 0) return null;
+  const sorted = [...points].sort((a, b) => a.time - b.time);
+  const ymd = shanghaiYmdString(sorted[0]!.time);
+  return {
+    from: shanghaiWallUnixSec(ymd, 9, 15),
+    to: shanghaiWallUnixSec(ymd, 15, 0),
+  };
+}
+
+/**
+ * 在折线序列首尾补会话边界的空白时间点，锚定完整横轴（否则库易按已有 K 线收缩可视区）。
+ */
+export function padIntradayLineDataWithSessionEdges<T extends { time: Time; value?: number }>(
+  lineData: T[],
+  session: { from: number; to: number },
+): T[] {
+  if (lineData.length === 0) return lineData;
+  let minT = Infinity;
+  let maxT = -Infinity;
+  for (const d of lineData) {
+    const t = d.time as number;
+    if (typeof t === "number" && Number.isFinite(t)) {
+      minT = Math.min(minT, t);
+      maxT = Math.max(maxT, t);
+    }
+  }
+  if (!Number.isFinite(minT) || !Number.isFinite(maxT)) return lineData;
+  const out = [...lineData];
+  if (minT > session.from) {
+    out.unshift({ time: session.from as UTCTimestamp } as T);
+  }
+  if (maxT < session.to) {
+    out.push({ time: session.to as UTCTimestamp } as T);
+  }
+  return out;
+}
+
+/**
+ * 分时底部固定锚点：09:15 / 09:30 / 11:30 / 13:00 / 15:00（与完整交易日横轴一致）。
  */
 export function buildIntradayAxisAnchors(points: IntradayPoint[]): { unix: number; label: string }[] {
   if (points.length === 0) return [];
   const sorted = [...points].sort((a, b) => a.time - b.time);
   const first = sorted[0]!.time;
-  const last = sorted[sorted.length - 1]!.time;
   const ymd = shanghaiYmdString(first);
   const wall = (h: number, m: number) => shanghaiWallUnixSec(ymd, h, m);
   const lab = (h: number, m: number) => `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-  const anchors = [
+  return [
+    { unix: wall(9, 15), label: lab(9, 15) },
     { unix: wall(9, 30), label: lab(9, 30) },
     { unix: wall(11, 30), label: lab(11, 30) },
     { unix: wall(13, 0), label: lab(13, 0) },

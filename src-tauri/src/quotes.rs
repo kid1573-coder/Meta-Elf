@@ -2175,10 +2175,20 @@ fn mock_order_book_for_code(code: &str) -> OrderBook {
 
 // --- 底部市场信息条：主要股指 + 涨跌家数 + 两市成交额（东财 push2 / push2his）---
 
-/// 主要指数一项（横向滚动展示）
+/// 主要指数一项（底栏盯盘：前端按涨跌/波动筛选展示）
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RibbonIndexItem {
+    /// 稳定键，如 `sh000001`、`glob_n225`，供前端做「久无波动则弱化」
+    pub id: String,
+    pub name: String,
+    pub change_pct: f64,
+}
+
+/// 行业板块一项（市场快览浮层领涨/领跌）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketSectorBrief {
     pub name: String,
     pub change_pct: f64,
 }
@@ -2194,6 +2204,10 @@ pub struct MarketRibbonSnapshot {
     pub turnover_today: f64,
     /// 上一交易日沪深两市成交额之和（元，来自日 K 倒数第二根 `成交额` 列）
     pub turnover_yesterday: f64,
+    /// 沪深行业板块涨跌幅前六（东财 `clist` `m:90+t:2`）
+    pub sector_gainers: Vec<MarketSectorBrief>,
+    /// 沪深行业板块涨跌幅后六（跌幅最大）
+    pub sector_losers: Vec<MarketSectorBrief>,
 }
 
 fn json_u64_field(obj: &serde_json::Map<String, Value>, key: &str) -> u64 {
@@ -2261,8 +2275,40 @@ async fn fetch_index_yesterday_turnover_from_kline(
         .unwrap_or(0.0)
 }
 
-/// 上证、深证指数快照上的涨跌家数（`f104`/`f105`，各代表该市场成分，求和近似全 A）
+/// 东财 `qt/stock/get` 里指数 `f104`/`f105` 长期为 `"-"`，解析后恒为 0；改用与列表同源的 `ulist.np` 批量拉上证/深证成指。
+const MARKET_BREADTH_ULIST_URL: &str = "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=1.000001,0.399001&fields=f104,f105";
+
 async fn fetch_market_breadth_up_down(client: &reqwest::Client) -> (u32, u32) {
+    let text = match client.get(MARKET_BREADTH_ULIST_URL).send().await {
+        Ok(r) => match r.text().await {
+            Ok(t) => t,
+            Err(_) => return fetch_market_breadth_up_down_stock_get(client).await,
+        },
+        Err(_) => return fetch_market_breadth_up_down_stock_get(client).await,
+    };
+    let Ok(v) = serde_json::from_str::<Value>(&text) else {
+        return fetch_market_breadth_up_down_stock_get(client).await;
+    };
+    let Some(diff) = v.pointer("/data/diff").and_then(|d| d.as_array()) else {
+        return fetch_market_breadth_up_down_stock_get(client).await;
+    };
+    let mut up: u64 = 0;
+    let mut down: u64 = 0;
+    for item in diff {
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        up += json_u64_field(obj, "f104");
+        down += json_u64_field(obj, "f105");
+    }
+    if diff.is_empty() {
+        return fetch_market_breadth_up_down_stock_get(client).await;
+    }
+    (up.min(u32::MAX as u64) as u32, down.min(u32::MAX as u64) as u32)
+}
+
+/// 回退：`stock/get`（多数时候 `f104`/`f105` 为 `"-"`，仅在网络或 ulist 异常时兜底）
+async fn fetch_market_breadth_up_down_stock_get(client: &reqwest::Client) -> (u32, u32) {
     let mut up: u64 = 0;
     let mut down: u64 = 0;
     for secid in ["1.000001", "0.399001"] {
@@ -2289,7 +2335,73 @@ async fn fetch_market_breadth_up_down(client: &reqwest::Client) -> (u32, u32) {
     (up.min(u32::MAX as u64) as u32, down.min(u32::MAX as u64) as u32)
 }
 
-/// 底部条：股民日常最常对照的主要指数（两市基准 + 沪深300 宽基 + 成长风格 + 港股）
+/// 东财行业板块 `fs`：**必须用 `+` 连接**（`urlencoding` 会编成 `%2B`）。若写成空格再编码为 `%20`，服务端会扩成数万只标的（杠杆 ETF 等），`f3` 会出现 500% 级假数据。
+const EM_INDUSTRY_BOARD_FS: &str = "m:90+t:2+f:!50";
+
+fn parse_industry_board_clist_diff(text: &str) -> Vec<MarketSectorBrief> {
+    let Ok(v) = serde_json::from_str::<Value>(text) else {
+        return vec![];
+    };
+    let Some(diff) = v.pointer("/data/diff").and_then(|d| d.as_array()) else {
+        return vec![];
+    };
+    let mut rows: Vec<MarketSectorBrief> = Vec::new();
+    for item in diff {
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        let name = obj
+            .get("f14")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let change_pct = json_f64(obj, "f3").unwrap_or(0.0);
+        if !change_pct.is_finite() {
+            continue;
+        }
+        rows.push(MarketSectorBrief { name, change_pct });
+    }
+    rows
+}
+
+/// 东财 `clist`：`po=1` 按 `f3` 降序（涨幅榜），`po=0` 升序（跌幅榜）。领跌不可只在 `po=1` 的一页里取最小值，否则跌幅最大者可能不在该页。
+async fn fetch_industry_board_clist_page(client: &reqwest::Client, po: u8) -> String {
+    let fs = urlencoding::encode(EM_INDUSTRY_BOARD_FS);
+    let url = format!(
+        "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=50&po={}&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f3&fields=f14,f3&fs={}",
+        po, fs
+    );
+    match client.get(&url).send().await {
+        Ok(r) => match r.text().await {
+            Ok(t) => t,
+            Err(_) => String::new(),
+        },
+        Err(_) => String::new(),
+    }
+}
+
+/// 东财 `clist` 沪深行业板块，用于市场快览领涨/领跌（与网页排序一致：直接取接口顺序前 6）
+async fn fetch_industry_sector_leaders(
+    client: &reqwest::Client,
+) -> (Vec<MarketSectorBrief>, Vec<MarketSectorBrief>) {
+    let (text_desc, text_asc) =
+        futures::join!(fetch_industry_board_clist_page(client, 1), fetch_industry_board_clist_page(client, 0));
+    let gainers: Vec<MarketSectorBrief> = parse_industry_board_clist_diff(&text_desc)
+        .into_iter()
+        .take(6)
+        .collect();
+    let losers: Vec<MarketSectorBrief> = parse_industry_board_clist_diff(&text_asc)
+        .into_iter()
+        .take(6)
+        .collect();
+    (gainers, losers)
+}
+
+/// 底部条：A 股核心宽基 + 港股 + 与 A 股联动常见外盘（东财 `100.*` 全球指数）
 const RIBBON_MAJOR_INDICES: &[(&str, &str)] = &[
     ("sh000001", "上证"),
     ("sz399001", "深证"),
@@ -2300,6 +2412,45 @@ const RIBBON_MAJOR_INDICES: &[(&str, &str)] = &[
     ("fsa50", "富时A50"),
     ("ndx", "纳斯达克"),
 ];
+
+/// 按 `secid` 拉一条全球/离岸指数（`stock/get`，与恒生路径一致）
+async fn fetch_ribbon_by_secid(
+    client: &reqwest::Client,
+    id: &str,
+    label: &str,
+    secid: &str,
+) -> Option<RibbonIndexItem> {
+    let url = format!(
+        "https://push2.eastmoney.com/api/qt/stock/get?invt=2&fltt=2&secid={}&fields={}",
+        urlencoding::encode(secid),
+        STOCK_GET_FIELDS
+    );
+    let text = client.get(&url).send().await.ok()?.text().await.ok()?;
+    let v: Value = serde_json::from_str(&text).ok()?;
+    let row = parse_em_stock_json(id, &v).ok()?;
+    if row.price <= 1e-9 && row.prev_close <= 1e-9 && row.change_pct.abs() < 1e-6 {
+        return None;
+    }
+    Some(RibbonIndexItem {
+        id: id.to_string(),
+        name: label.to_string(),
+        change_pct: row.change_pct,
+    })
+}
+
+async fn fetch_first_ribbon_secid(
+    client: &reqwest::Client,
+    id: &str,
+    label: &str,
+    secids: &[&str],
+) -> Option<RibbonIndexItem> {
+    for s in secids {
+        if let Some(it) = fetch_ribbon_by_secid(client, id, label, s).await {
+            return Some(it);
+        }
+    }
+    None
+}
 
 async fn fetch_ribbon_major_indices(client: &reqwest::Client) -> Vec<RibbonIndexItem> {
     // 港股/全球指数勿进 ulist 批量：易拖垮整批或 `f2` 解析与 A 股不一致
@@ -2314,6 +2465,7 @@ async fn fetch_ribbon_major_indices(client: &reqwest::Client) -> Vec<RibbonIndex
     let map = fetch_quotes_eastmoney_ulist(client, &codes_ulist)
         .await
         .unwrap_or_default();
+<<<<<<< HEAD
     
     // 单独拉取海外指数
     let overseas_map = fetch_quotes_eastmoney_ulist(client, &["fsa50".into(), "ndx".into(), "hkhsi".into()])
@@ -2321,6 +2473,9 @@ async fn fetch_ribbon_major_indices(client: &reqwest::Client) -> Vec<RibbonIndex
         .unwrap_or_default();
 
     let mut out = Vec::with_capacity(RIBBON_MAJOR_INDICES.len());
+=======
+    let mut out = Vec::with_capacity(RIBBON_MAJOR_INDICES.len() + 4);
+>>>>>>> b102705aad8c82211912b06b27fe09239addbbd3
     for (code, label) in RIBBON_MAJOR_INDICES {
         let k = code.to_lowercase();
         let change_pct = if k == "hkhsi" {
@@ -2347,9 +2502,27 @@ async fn fetch_ribbon_major_indices(client: &reqwest::Client) -> Vec<RibbonIndex
             fetch_one_em(client, code).await.change_pct
         };
         out.push(RibbonIndexItem {
+            id: k.clone(),
             name: (*label).to_string(),
             change_pct,
         });
+    }
+
+    let (ftse, n225, ndx, dji) = futures::join!(
+        fetch_first_ribbon_secid(
+            client,
+            "glob_ftsea50",
+            "富时A50",
+            &["100.XIN9", "100.CN00Y"],
+        ),
+        fetch_first_ribbon_secid(client, "glob_n225", "日经225", &["100.N225", "100.NKY"]),
+        fetch_first_ribbon_secid(client, "glob_ndx", "纳指", &["100.NDX", "100.IXIC"]),
+        fetch_first_ribbon_secid(client, "glob_dji", "道指", &["100.DJIA", "100.DJI"]),
+    );
+    for g in [ftse, n225, ndx, dji] {
+        if let Some(it) = g {
+            out.push(it);
+        }
     }
     out
 }
@@ -2358,45 +2531,100 @@ fn mock_market_ribbon() -> MarketRibbonSnapshot {
     MarketRibbonSnapshot {
         indices: vec![
             RibbonIndexItem {
+                id: "sh000001".into(),
                 name: "上证".into(),
                 change_pct: 0.35,
             },
             RibbonIndexItem {
+                id: "sz399001".into(),
                 name: "深证".into(),
                 change_pct: 0.52,
             },
             RibbonIndexItem {
+                id: "sh000300".into(),
                 name: "沪深300".into(),
                 change_pct: 0.28,
             },
             RibbonIndexItem {
+                id: "sz399006".into(),
                 name: "创业板".into(),
                 change_pct: 1.12,
             },
             RibbonIndexItem {
+                id: "sh000688".into(),
                 name: "科创50".into(),
                 change_pct: -0.82,
             },
             RibbonIndexItem {
+                id: "hkhsi".into(),
                 name: "恒生".into(),
                 change_pct: -0.21,
+            },
+            RibbonIndexItem {
+                id: "glob_ftsea50".into(),
+                name: "富时A50".into(),
+                change_pct: 0.41,
+            },
+            RibbonIndexItem {
+                id: "glob_n225".into(),
+                name: "日经225".into(),
+                change_pct: -0.67,
             },
         ],
         up_count: 2650,
         down_count: 2180,
         turnover_today: 1.18e12,
         turnover_yesterday: 1.09e12,
+        sector_gainers: vec![
+            MarketSectorBrief {
+                name: "光伏设备".into(),
+                change_pct: 2.35,
+            },
+            MarketSectorBrief {
+                name: "半导体".into(),
+                change_pct: 1.82,
+            },
+            MarketSectorBrief {
+                name: "通信设备".into(),
+                change_pct: 1.41,
+            },
+        ],
+        sector_losers: vec![
+            MarketSectorBrief {
+                name: "房地产".into(),
+                change_pct: -1.92,
+            },
+            MarketSectorBrief {
+                name: "煤炭".into(),
+                change_pct: -1.05,
+            },
+            MarketSectorBrief {
+                name: "银行".into(),
+                change_pct: -0.38,
+            },
+        ],
     }
 }
 
 async fn fetch_market_ribbon_eastmoney(client: &reqwest::Client) -> MarketRibbonSnapshot {
-    let indices = fetch_ribbon_major_indices(client).await;
-    let (up_count, down_count) = fetch_market_breadth_up_down(client).await;
-    let sh = fetch_one_em(client, "sh000001").await;
-    let sz = fetch_one_em(client, "sz399001").await;
+    let (
+        indices,
+        (up_count, down_count),
+        (sector_gainers, sector_losers),
+        sh,
+        sz,
+        y_sh,
+        y_sz,
+    ) = futures::join!(
+        fetch_ribbon_major_indices(client),
+        fetch_market_breadth_up_down(client),
+        fetch_industry_sector_leaders(client),
+        fetch_one_em(client, "sh000001"),
+        fetch_one_em(client, "sz399001"),
+        fetch_index_yesterday_turnover_from_kline(client, "sh000001"),
+        fetch_index_yesterday_turnover_from_kline(client, "sz399001"),
+    );
     let turnover_today = sh.turnover + sz.turnover;
-    let y_sh = fetch_index_yesterday_turnover_from_kline(client, "sh000001").await;
-    let y_sz = fetch_index_yesterday_turnover_from_kline(client, "sz399001").await;
     let turnover_yesterday = y_sh + y_sz;
     MarketRibbonSnapshot {
         indices,
@@ -2404,6 +2632,8 @@ async fn fetch_market_ribbon_eastmoney(client: &reqwest::Client) -> MarketRibbon
         down_count,
         turnover_today,
         turnover_yesterday,
+        sector_gainers,
+        sector_losers,
     }
 }
 
