@@ -25,6 +25,7 @@ const props = withDefaults(
 );
 
 const rootRef = ref<HTMLElement | null>(null);
+const tableRef = ref<HTMLElement | null>(null);
 const dividerRef = ref<HTMLElement | null>(null);
 const topSpacerPx = ref(0);
 let ro: ResizeObserver | null = null;
@@ -74,14 +75,16 @@ function measureTopSpacer() {
     return;
   }
   const div = dividerRef.value;
-  if (!div) return;
+  const root = rootRef.value;
+  if (!div || !root) return;
   const d = div.getBoundingClientRect();
   const midScreen = d.top + d.height / 2;
-  /* 分隔线中点与零轴同视口 Y：S' = S + (baseline − mid)，一步到位 */
-  topSpacerPx.value = Math.max(
-    0,
-    Math.round(topSpacerPx.value + baselineScreen - midScreen),
-  );
+  const rootH = root.getBoundingClientRect().height;
+  const tableH = tableRef.value?.getBoundingClientRect().height ?? 56;
+  /* 顶 spacer + 表格不能超过盘口高度，否则 flex-shrink:0 会把买一档裁在面板外 */
+  const maxSpacer = Math.max(0, Math.floor(rootH - tableH - 4));
+  const next = Math.round(topSpacerPx.value + baselineScreen - midScreen);
+  topSpacerPx.value = Math.max(0, Math.min(next, maxSpacer));
 }
 
 /** 不在测量前把 spacer 清零，避免每次零轴更新时盘口先塌一帧再跳 */
@@ -161,7 +164,7 @@ function pxCls(price: number) {
         class="order-book__spacer-top"
         :style="{ height: `${topSpacerPx}px` }"
       />
-      <div class="order-book__table">
+      <div ref="tableRef" class="order-book__table">
         <div
           v-for="(lv, i) in book.asks"
           :key="'a' + i"

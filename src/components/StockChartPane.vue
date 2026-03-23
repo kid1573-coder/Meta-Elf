@@ -4,6 +4,7 @@ import {
   CrosshairMode,
   LineStyle,
   createChart,
+  type AutoscaleInfo,
   type BaselineData,
   type CandlestickData,
   type HistogramData,
@@ -21,6 +22,7 @@ import type {
   ChartIndicatorPresetId,
   ChartInlineStats,
   ChartTabId,
+  IntradayPoint,
   IntradaySeries,
   KlineSeries,
 } from "../types/marketDetail";
@@ -44,6 +46,8 @@ import {
   buildIntradayAxisAnchors,
   buildIntradayAvgLineDataFromItems,
   buildIntradayChartItems,
+  intradaySessionVisibleRangeUnix,
+  padIntradayLineDataWithSessionEdges,
 } from "../utils/intradayChartItems";
 import { computeIntradaySessionExtremaMarkers } from "../utils/intradayPivots";
 import { changeClass, fmtFixed } from "../utils/format";
@@ -166,6 +170,47 @@ const hasSeriesData = computed(() => {
   }
   return (props.kline?.points?.length ?? 0) > 0;
 });
+
+/** 分时主图纵轴：在当日价区基础上留边距，避免仅剩几根 K 时纵轴被拉满像「探索」 */
+function intradayMainAutoscaleProvider(
+  preClose: number,
+  points: IntradayPoint[],
+): (_base: AutoscaleInfo | null) => AutoscaleInfo | null {
+  return () => {
+    const vals: number[] = [];
+    if (preClose > 0) vals.push(preClose);
+    for (const p of points) {
+      if (Number.isFinite(p.close) && p.close > 0) vals.push(p.close);
+      if (p.avgPrice != null && Number.isFinite(p.avgPrice) && p.avgPrice > 0) vals.push(p.avgPrice);
+    }
+    if (vals.length === 0) return null;
+    const lo = Math.min(...vals);
+    const hi = Math.max(...vals);
+    const ref = preClose > 0 ? preClose : (lo + hi) * 0.5;
+    const span = hi - lo;
+    const pad = Math.max(span * 0.2, ref * 0.01, 1e-6);
+    return {
+      priceRange: {
+        minValue: lo - pad,
+        maxValue: hi + pad,
+      },
+    };
+  };
+}
+
+function applyIntradayTimeRange(chart: IChartApi, points: IntradayPoint[]) {
+  const sessionR = intradaySessionVisibleRangeUnix(points);
+  if (!sessionR) return;
+  try {
+    chart.timeScale().setVisibleRange({
+      from: sessionR.from as UTCTimestamp,
+      to: sessionR.to as UTCTimestamp,
+    });
+  } catch {
+    /* 极窄容器下库可能拒设 */
+  }
+  chart.timeScale().applyOptions({ rightOffset: 0 });
+}
 
 const showInlineStrip = computed(
   () =>
@@ -302,6 +347,9 @@ function resizeToContainer() {
   const h = Math.max(80, el.clientHeight || 112);
   const w = Math.max(80, el.clientWidth);
   c.applyOptions({ width: w, height: h });
+  if (props.chartTab === "intraday" && props.intraday?.points?.length) {
+    applyIntradayTimeRange(c, props.intraday.points);
+  }
   syncPrevCloseAfterChartLayout();
 }
 
@@ -337,10 +385,13 @@ function rebuildChart() {
     },
     timeScale: {
       borderVisible: false,
-      /* 分时改用底部自定义刻度，保证 09:30/11:30/13:00/收盘时刻齐全 */
+      /* 分时改用底部自定义刻度，保证 09:15/09:30/11:30/13:00/15:00 齐全 */
       visible: props.chartTab !== "intraday",
       timeVisible: props.chartTab === "intraday",
       secondsVisible: false,
+      /* 新数据到达时不要自动平移可视区，否则会背离「全日横轴先铺好」 */
+      shiftVisibleRangeOnNewBar: props.chartTab === "intraday" ? false : true,
+      lockVisibleTimeRangeOnResize: props.chartTab === "intraday",
       /* 避免 fitContent 后在最右侧留出「空白柱距」，图与右侧盘口之间像多出一截 */
       rightOffset: 0,
       tickMarkFormatter: (time: Time) =>
@@ -362,12 +413,17 @@ function rebuildChart() {
 
   if (props.chartTab === "intraday" && props.intraday?.points?.length) {
     const pre = intradayPrevClosePrice();
-    const chartItems = buildIntradayChartItems(props.intraday.points);
-    const lineData: (BaselineData | WhitespaceData)[] = chartItems.map((row) =>
+    const pts = props.intraday.points;
+    const sessionR = intradaySessionVisibleRangeUnix(pts);
+    const chartItems = buildIntradayChartItems(pts);
+    let lineData: (BaselineData | WhitespaceData)[] = chartItems.map((row) =>
       row.kind === "bar"
         ? { time: row.p.time as UTCTimestamp, value: row.p.close }
         : { time: row.time as UTCTimestamp },
     );
+    if (sessionR) {
+      lineData = padIntradayLineDataWithSessionEdges(lineData, sessionR);
+    }
     const isRedUp = props.colorScheme === "redUp";
     const topFill1 = isRedUp ? "rgba(239, 68, 68, 0.2)" : "rgba(34, 197, 94, 0.2)";
     const topFill2 = isRedUp ? "rgba(239, 68, 68, 0.04)" : "rgba(34, 197, 94, 0.04)";
@@ -376,6 +432,8 @@ function rebuildChart() {
     /* 零轴：比背景网格略醒目的虚线，仍保持中性灰 */
     const zeroAxisLineColor =
       props.theme === "light" ? "rgba(0, 0, 0, 0.12)" : "rgba(255, 255, 255, 0.16)";
+
+    const intradayScale = intradayMainAutoscaleProvider(pre, pts);
 
     if (pre > 0) {
       const bl = chart.addBaselineSeries({
@@ -389,6 +447,7 @@ function rebuildChart() {
         topFillColor2: topFill2,
         bottomFillColor1: botFill1,
         bottomFillColor2: botFill2,
+        autoscaleInfoProvider: intradayScale,
       });
       intradayLineSeries.value = bl;
       bl.setData(lineData);
@@ -404,6 +463,7 @@ function rebuildChart() {
         color: up,
         lineWidth: 2,
         priceLineVisible: true,
+        autoscaleInfoProvider: intradayScale,
       });
       intradayLineSeries.value = line;
       line.setData(lineData as (LineData | WhitespaceData)[]);
@@ -412,11 +472,14 @@ function rebuildChart() {
     const avgColor =
       props.theme === "light" ? "rgba(161, 98, 7, 0.95)" : "rgba(234, 179, 8, 0.9)";
     const avgRaw = buildIntradayAvgLineDataFromItems(chartItems);
-    const avgData: (LineData | WhitespaceData)[] = avgRaw.map((x) =>
+    let avgData: (LineData | WhitespaceData)[] = avgRaw.map((x) =>
       x.value != null && Number.isFinite(x.value)
         ? { time: x.time as UTCTimestamp, value: x.value }
         : { time: x.time as UTCTimestamp },
     );
+    if (sessionR) {
+      avgData = padIntradayLineDataWithSessionEdges(avgData, sessionR);
+    }
     if (avgData.length > 0) {
       const avgLine = chart.addLineSeries({
         color: avgColor,
@@ -449,7 +512,8 @@ function rebuildChart() {
         scaleMargins: { top: 0.06, bottom: 0.04 },
       });
     }
-    chart.timeScale().fitContent();
+    /* 横轴固定 09:15～15:00；setData 后库可能重算可视区，故布局后再锁一次 */
+    applyIntradayTimeRange(chart, pts);
     chart.timeScale().applyOptions({ rightOffset: 0 });
     tsVisibleRangeListener = () => {
       syncPrevCloseOverlay();
@@ -457,6 +521,13 @@ function rebuildChart() {
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(tsVisibleRangeListener);
     syncPrevCloseAfterChartLayout();
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        applyIntradayTimeRange(chart, pts);
+        syncIntradayAxisSlots();
+        syncPrevCloseOverlay();
+      });
+    });
   } else if (props.kline?.points?.length) {
     const pts = props.kline.points;
     const timeAt = (u: number) => shanghaiUnixToBusinessDay(u);
@@ -1103,7 +1174,11 @@ onUnmounted(() => {
   font-size: 0.68em;
   line-height: 1.35;
   color: var(--yj-text-muted);
-  text-shadow: 0 1px 2px color-mix(in srgb, var(--yj-settings-bg-1) 85%, transparent);
+  padding: 5px 10px 5px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--yj-modal-panel-border);
+  background: var(--yj-modal-panel-bg);
+  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.22);
 }
 
 .chart-pane__strip-col {

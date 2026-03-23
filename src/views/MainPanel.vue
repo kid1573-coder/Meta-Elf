@@ -27,7 +27,9 @@ const { settings, loading, save, applyWindowPrefs } = useSettings();
 
 const codesForQuotes = computed(() => {
   const w = settings.value?.watchlist.map((x) => x.code) ?? [];
-  return [...new Set([...DEFAULT_QUOTE_CODES, ...w])];
+  /** 有自选时不再强行拉取示例 ETF，避免「像自选一样在全部里却删不掉」 */
+  const defaults = w.length === 0 ? DEFAULT_QUOTE_CODES : [];
+  return [...new Set([...defaults, ...w])];
 });
 const quoteSourceRef = computed(() => settings.value?.quoteSource ?? "eastmoney");
 
@@ -47,6 +49,8 @@ const ribbon = ref<MarketRibbonSnapshot | null>(null);
 const ribbonLoading = ref(false);
 const ribbonErr = ref<string | null>(null);
 let ribbonPoll: ReturnType<typeof setInterval> | null = null;
+/** 市场快览（含板块）单次请求多路东财接口，略低于列表行情轮询，避免过猛；仍明显快于原 60s「像不刷新」 */
+const RIBBON_POLL_MS = 15_000;
 
 useEdgeHide(settings);
 
@@ -82,7 +86,7 @@ watch(quoteSourceRef, () => {
 
 onMounted(() => {
   start();
-  ribbonPoll = setInterval(() => void loadRibbon(), 60_000);
+  ribbonPoll = setInterval(() => void loadRibbon(), RIBBON_POLL_MS);
 });
 
 function persistLastGroupId(id: string) {
@@ -277,7 +281,7 @@ async function toggleTheme() {
 
 const minimal = computed(() => settings.value?.panelMode === "minimal");
 
-/** 右键菜单：全部/自选股列表中任意一行；已在自选 → 排序/删除，未在自选 → 加入自选（默认指数/ETF 常属此类） */
+/** 右键菜单：已在自选或当前分组内 → 排序/删除；否则 → 加入自选 + 查看详情 */
 const ctxOpen = ref(false);
 const ctxX = ref(0);
 const ctxY = ref(0);
@@ -292,8 +296,19 @@ function rowInWatchlist(row: QuoteRow): boolean {
   return watchlistIndex(row.code) >= 0;
 }
 
-const ctxInWatchlist = computed(() =>
-  ctxRow.value ? rowInWatchlist(ctxRow.value) : false,
+/** 是否展示「自选级」菜单：在全局自选中，或当前选中的分组里包含该代码（修复仅分组有、自选数组缺项时的菜单误判） */
+function rowShowsManagedCtxMenu(row: QuoteRow): boolean {
+  const s = settings.value;
+  if (!s) return false;
+  if (rowInWatchlist(row)) return true;
+  if (selectedTab.value === "all") return false;
+  const g = s.watchGroups.find((x) => x.id === selectedTab.value);
+  if (!g) return false;
+  return groupCodeIndex(g, row.code) >= 0;
+}
+
+const ctxRowManaged = computed(() =>
+  ctxRow.value ? rowShowsManagedCtxMenu(ctxRow.value) : false,
 );
 
 function onRowContextMenu(e: MouseEvent, row: QuoteRow) {
@@ -303,7 +318,7 @@ function onRowContextMenu(e: MouseEvent, row: QuoteRow) {
   ctxRow.value = row;
   const pad = 8;
   const mw = 200;
-  const mh = rowInWatchlist(row) ? 248 : 132;
+  const mh = rowShowsManagedCtxMenu(row) ? 248 : 132;
   ctxX.value = Math.max(pad, Math.min(e.clientX, window.innerWidth - mw - pad));
   ctxY.value = Math.max(pad, Math.min(e.clientY, window.innerHeight - mh - pad));
   ctxOpen.value = true;
@@ -878,7 +893,7 @@ async function ctxMoveDown() {
       <div
         v-if="ctxOpen && ctxRow"
         class="ctx-menu"
-        :class="{ 'ctx-menu--compact': !ctxInWatchlist }"
+        :class="{ 'ctx-menu--compact': !ctxRowManaged }"
         :style="{ left: ctxX + 'px', top: ctxY + 'px' }"
         role="menu"
         @click.stop
@@ -886,7 +901,7 @@ async function ctxMoveDown() {
       >
         <div class="ctx-title">{{ displayName(ctxRow) }}</div>
 
-        <template v-if="ctxInWatchlist">
+        <template v-if="ctxRowManaged">
           <button type="button" class="ctx-item" @click="ctxToTop">置顶</button>
           <button type="button" class="ctx-item" @click="ctxToBottom">置底</button>
           <button type="button" class="ctx-item" :disabled="!ctxCanUp" @click="ctxMoveUp">
