@@ -16,7 +16,7 @@ npm install
 npm run tauri dev
 ```
 
-开发时 Vite 使用端口 **1430**（与 `devUrl` 一致）。若报端口占用，先关掉其它 `tauri dev` 终端或执行：`Get-NetTCPConnection -LocalPort 1430` → `Stop-Process -Id <PID> -Force`；也可自行改 `vite.config.ts` 与 `src-tauri/tauri.conf.json` 中的端口并保持两处相同。
+开发时 Vite 使用端口 **1430**（与 `devUrl` 一致）。`npm run dev` / `tauri dev` 会先通过 **kill-port** 释放该端口，避免上次未退干净的 Vite 占用导致 `beforeDevCommand` 失败。若仍冲突，可手动：`Get-NetTCPConnection -LocalPort 1430` → `Stop-Process -Id <PID> -Force`；或改 `vite.config.ts` 与 `src-tauri/tauri.conf.json` 中的端口并保持两处相同。
 
 Windows 下若终端找不到 `cargo`，也可执行：
 

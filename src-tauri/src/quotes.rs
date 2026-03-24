@@ -190,9 +190,43 @@ fn em_changes_client() -> Result<reqwest::Client, String> {
         .map_err(|e| e.to_string())
 }
 
+/// `eq142xsc2605` → `142.sc2605`（东财期货/全球品种 QuoteID 转 secid）
+fn eq_internal_to_secid(code: &str) -> Option<String> {
+    let c = code.strip_prefix("eq")?;
+    let x_pos = c.find('x')?;
+    let mkt = &c[..x_pos];
+    if mkt.is_empty() || !mkt.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let sym_part = c.get(x_pos + 1..)?;
+    if sym_part.is_empty() {
+        return None;
+    }
+    let sym = sym_part.replace('x', ".").to_uppercase();
+    Some(format!("{mkt}.{sym}"))
+}
+
+/// 横条/搜索快捷：`code` 已小写，映射到东财主用 `secid`（`fetch_one_em` 可再试备用 secid）
+fn glob_code_primary_secid_lc(c: &str) -> Option<&'static str> {
+    match c {
+        "glob_n225" => Some("100.NKY"),
+        "glob_cl" => Some("102.CL00Y"),
+        "glob_jm" => Some("114.jm888"),
+        "glob_j" => Some("114.j888"),
+        "glob_zc" => Some("220.zc888"),
+        _ => None,
+    }
+}
+
 /// `sh600519` / `sz000001` / `bj920174` / `hkhsi`（恒生指数）→ 东财 `secid`
 pub fn code_to_secid(code: &str) -> Option<String> {
     let c = code.trim().to_lowercase();
+    if let Some(s) = glob_code_primary_secid_lc(&c) {
+        return Some(s.to_string());
+    }
+    if let Some(s) = eq_internal_to_secid(&c) {
+        return Some(s);
+    }
     // 恒生指数：WAP/行情页多为 `100.HSI`；`116.HSI` 为部分旧接口，见 `fetch_hk_hsi_em` 回退
     if c == "hkhsi" {
         return Some("100.HSI".into());
@@ -241,6 +275,12 @@ fn internal_to_quote_id(code: &str) -> Option<String> {
 /// 内部 `sh601899` / `sz002309` / `bj920174` → `ulist` 的 `secids` 段（与 `em_guba_sc_to_ulist_sec` 一致）
 fn internal_code_to_ulist_sec(code: &str) -> Option<String> {
     let c = code.trim().to_lowercase();
+    if let Some(s) = glob_code_primary_secid_lc(&c) {
+        return Some(s.to_string());
+    }
+    if let Some(s) = eq_internal_to_secid(&c) {
+        return Some(s);
+    }
     if c == "hkhsi" {
         return Some("100.HSI".into());
     }
@@ -386,16 +426,32 @@ fn em_guba_sc_to_internal(sc: &str) -> Option<String> {
     }
 }
 
-/// 东财 `QuoteID`（如 `1.600519`）→ 内部 `sh600519`
+/// 东财 `QuoteID`（如 `1.600519`）→ 内部 `sh600519`；期货/外盘如 `142.sc2605` → `eq142xsc2605`
 pub fn quote_id_to_code(quote_id: &str) -> Option<String> {
-    let (mkt, num) = quote_id.trim().split_once('.')?;
-    let n: u32 = num.parse().ok()?;
-    let padded = format!("{:06}", n);
+    let q = quote_id.trim();
+    let (mkt, rest) = q.split_once('.')?;
     match mkt {
-        "1" => Some(format!("sh{}", padded)),
-        "0" => Some(format!("sz{}", padded)),
-        "116" => Some(format!("bj{}", padded)),
-        _ => None,
+        "1" | "0" | "116" => {
+            let n: u32 = rest.parse().ok()?;
+            let padded = format!("{:06}", n);
+            let code = match mkt {
+                "1" => format!("sh{padded}"),
+                "0" => format!("sz{padded}"),
+                "116" => format!("bj{padded}"),
+                _ => unreachable!(),
+            };
+            Some(code)
+        }
+        _ => {
+            if !mkt.chars().all(|ch| ch.is_ascii_digit()) {
+                return None;
+            }
+            if rest.is_empty() {
+                return None;
+            }
+            let sym_norm = rest.trim().to_lowercase().replace('.', "x");
+            Some(format!("eq{mkt}x{sym_norm}"))
+        }
     }
 }
 
@@ -530,6 +586,28 @@ fn code_digits_match_f12(internal_lower: &str, f12: &str) -> bool {
         return true;
     }
     if internal_lower == "ndx" && t.eq_ignore_ascii_case("NDX") {
+        return true;
+    }
+    if let Some(sym) = internal_lower.strip_prefix("eq").and_then(|rest| rest.find('x').map(|p| &rest[p + 1..])) {
+        let sym_lc = sym.replace('x', ".").to_lowercase();
+        let tl = t.to_lowercase();
+        if tl == sym_lc || tl.ends_with(&sym_lc) || sym_lc.ends_with(&tl) {
+            return true;
+        }
+    }
+    if internal_lower == "glob_n225" && t.eq_ignore_ascii_case("NKY") {
+        return true;
+    }
+    if internal_lower == "glob_cl" && t.eq_ignore_ascii_case("CL00Y") {
+        return true;
+    }
+    if internal_lower == "glob_jm" && t.eq_ignore_ascii_case("jm888") {
+        return true;
+    }
+    if internal_lower == "glob_j" && t.eq_ignore_ascii_case("j888") {
+        return true;
+    }
+    if internal_lower == "glob_zc" && t.eq_ignore_ascii_case("zc888") {
         return true;
     }
     let digits: String = internal_lower
@@ -670,12 +748,22 @@ async fn fetch_quotes_eastmoney_ulist(
             .and_then(|d| d.as_array())
             .cloned()
             .unwrap_or_default();
-        for (i, (internal, _sec)) in chunk.iter().enumerate() {
-            let Some(row) = diff.get(i) else {
+        for item in diff {
+            let Some(obj) = item.as_object() else { continue; };
+            let Some(f12) = json_code_f12(obj) else {
                 continue;
             };
-            if let Some(q) = parse_em_ulist_diff_row(internal, row) {
-                map.insert(internal.clone(), q);
+            let mut matched_internal = None;
+            for (internal, _sec) in chunk.iter() {
+                if code_digits_match_f12(internal, &f12) {
+                    matched_internal = Some(internal.clone());
+                    break;
+                }
+            }
+            if let Some(internal) = matched_internal {
+                if let Some(q) = parse_em_ulist_diff_row(&internal, &item) {
+                    map.insert(internal, q);
+                }
             }
         }
     }
@@ -808,9 +896,84 @@ async fn fetch_hk_hsi_em(client: &reqwest::Client) -> QuoteRow {
     error_row("hkhsi", "恒生指数无数据")
 }
 
+/// 期货/外盘主连 secid 可能调整：按列表依次试 `stock/get`
+async fn fetch_one_em_try_secids(
+    client: &reqwest::Client,
+    internal_code: &str,
+    secids: &[&str],
+) -> QuoteRow {
+    let ic = internal_code.trim().to_lowercase();
+    for secid in secids {
+        let url = format!(
+            "http://push2.eastmoney.com/api/qt/stock/get?invt=2&fltt=2&secid={}&fields={}",
+            urlencoding::encode(secid),
+            STOCK_GET_FIELDS
+        );
+        let Ok(res) = client.get(&url).send().await else {
+            continue;
+        };
+        let Ok(text) = res.text().await else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        if let Ok(row) = parse_em_stock_json(&ic, &v) {
+            if row.price > 1e-9 || row.prev_close > 1e-9 || row.change_pct.abs() > 1e-6 {
+                return row;
+            }
+        }
+    }
+    error_row(&ic, "无数据")
+}
+
 async fn fetch_one_em(client: &reqwest::Client, internal_code: &str) -> QuoteRow {
     if internal_code.trim().eq_ignore_ascii_case("hkhsi") {
         return fetch_hk_hsi_em(client).await;
+    }
+    let ic = internal_code.trim().to_lowercase();
+    match ic.as_str() {
+        "glob_n225" => {
+            return fetch_one_em_try_secids(
+                client,
+                &ic,
+                &["100.NKY", "100.N225", "100.NIKKEI225"],
+            )
+            .await;
+        }
+        "glob_cl" => {
+            return fetch_one_em_try_secids(
+                client,
+                &ic,
+                &["102.CL00Y", "103.CL00Y", "104.CL00Y", "152.CL00Y"],
+            )
+            .await;
+        }
+        "glob_jm" => {
+            return fetch_one_em_try_secids(
+                client,
+                &ic,
+                &["114.jm888", "114.jm9999", "114.jm0001", "114.JM888"],
+            )
+            .await;
+        }
+        "glob_j" => {
+            return fetch_one_em_try_secids(
+                client,
+                &ic,
+                &["114.j888", "114.j9999", "114.j0001", "114.J888"],
+            )
+            .await;
+        }
+        "glob_zc" => {
+            return fetch_one_em_try_secids(
+                client,
+                &ic,
+                &["220.zc888", "179.zc888", "114.zc888"],
+            )
+            .await;
+        }
+        _ => {}
     }
     let Some(secid) = code_to_secid(internal_code) else {
         return error_row(internal_code, "代码格式无效");
@@ -955,39 +1118,99 @@ struct SuggestRoot {
     quotation_code_table: Option<SuggestTable>,
 }
 
-/// 东财搜索联想（A 股、ETF、指数等）
+/// 中文/英文关键词 → 横条同源快捷代码（搜索框可直达）
+fn search_inject_ribbon_aliases(query: &str) -> Vec<SuggestItem> {
+    let q = query.trim();
+    if q.is_empty() {
+        return vec![];
+    }
+    let ql = q.to_lowercase();
+    let mut v: Vec<SuggestItem> = Vec::new();
+    let mut push = |code: &str, name: &str, qid: &str| {
+        v.push(SuggestItem {
+            code: code.into(),
+            name: name.into(),
+            quote_id: qid.into(),
+            sector: None,
+            price: None,
+            change_pct: None,
+            rank: None,
+        });
+    };
+    if q.contains("日经") || ql.contains("nikkei") || ql == "n225" {
+        push("glob_n225", "日经225", "100.NKY");
+    }
+    if q.contains("原油")
+        || q.contains("美油")
+        || q.contains("WTI")
+        || ql.contains("wti")
+        || q.contains("NYMEX")
+        || ql.contains("nymex")
+        || q.contains("石油")
+    {
+        push("glob_cl", "NYMEX原油(主连)", "102.CL00Y");
+    }
+    if q.contains("焦煤") {
+        push("glob_jm", "焦煤(主连)", "114.jm888");
+    }
+    if q.contains("焦炭") && !q.contains("焦煤") {
+        push("glob_j", "焦炭(主连)", "114.j888");
+    }
+    if q.contains("动力煤") || (q.contains("郑煤") && q.contains("期货")) {
+        push("glob_zc", "动力煤(主连)", "220.zc888");
+    }
+    v
+}
+
+async fn search_suggest_fetch_rows(client: &reqwest::Client, q: &str, type_mask: &str) -> Vec<SuggestDataRow> {
+    let url = format!(
+        "https://searchadapter.eastmoney.com/api/suggest/get?input={}&type={}&count=24",
+        urlencoding::encode(q),
+        urlencoding::encode(type_mask)
+    );
+    let Ok(res) = client.get(&url).send().await else {
+        return vec![];
+    };
+    let Ok(text) = res.text().await else {
+        return vec![];
+    };
+    let Ok(root) = serde_json::from_str::<SuggestRoot>(&text) else {
+        return vec![];
+    };
+    root.quotation_code_table
+        .and_then(|t| t.data)
+        .unwrap_or_default()
+}
+
+/// 东财搜索联想（A 股、ETF、指数、期货等；`type=14` 偏股票，再并一条宽类型提高期货命中率）
 pub async fn search_securities_eastmoney(query: &str) -> Result<Vec<SuggestItem>, String> {
     let q = query.trim();
     if q.is_empty() {
         return Ok(vec![]);
     }
     let client = em_client()?;
-    let url = format!(
-        "https://searchadapter.eastmoney.com/api/suggest/get?input={}&type=14&count=20",
-        urlencoding::encode(q)
+    let (rows_a, rows_b) = futures::join!(
+        search_suggest_fetch_rows(&client, q, "14"),
+        search_suggest_fetch_rows(&client, q, "8191"),
     );
-    let text = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .text()
-        .await
-        .map_err(|e| e.to_string())?;
-    let root: SuggestRoot = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    let rows = root
-        .quotation_code_table
-        .and_then(|t| t.data)
-        .unwrap_or_default();
-    let mut out = Vec::new();
-    for r in rows {
-        let Some(internal) = quote_id_to_code(&r.quote_id) else {
+    let mut seen_quote: HashSet<String> = HashSet::new();
+    let mut out: Vec<SuggestItem> = Vec::new();
+    for inj in search_inject_ribbon_aliases(q) {
+        seen_quote.insert(inj.quote_id.to_lowercase());
+        out.push(inj);
+    }
+    for r in rows_a.into_iter().chain(rows_b) {
+        let qid = r.quote_id.trim().to_string();
+        if qid.is_empty() || !seen_quote.insert(qid.to_lowercase()) {
+            continue;
+        }
+        let Some(internal) = quote_id_to_code(&qid) else {
             continue;
         };
         out.push(SuggestItem {
             code: internal,
             name: r.name,
-            quote_id: r.quote_id,
+            quote_id: qid,
             sector: None,
             price: None,
             change_pct: None,
@@ -2421,20 +2644,22 @@ async fn fetch_ribbon_by_secid(
     secid: &str,
 ) -> Option<RibbonIndexItem> {
     let url = format!(
-        "https://push2.eastmoney.com/api/qt/stock/get?invt=2&fltt=2&secid={}&fields={}",
-        urlencoding::encode(secid),
-        STOCK_GET_FIELDS
+        "https://push2.eastmoney.com/api/qt/ulist.np/get?ut=f057cbcbce2a86e2866ab8877db1d059&fltt=2&invt=2&fields=f2,f3&secids={}",
+        urlencoding::encode(secid)
     );
     let text = client.get(&url).send().await.ok()?.text().await.ok()?;
     let v: Value = serde_json::from_str(&text).ok()?;
-    let row = parse_em_stock_json(id, &v).ok()?;
-    if row.price <= 1e-9 && row.prev_close <= 1e-9 && row.change_pct.abs() < 1e-6 {
+    let diff = v.pointer("/data/diff").and_then(|d| d.as_array())?;
+    let obj = diff.first()?.as_object()?;
+    let price = json_f64(obj, "f2").unwrap_or(0.0);
+    let change_pct = json_f64(obj, "f3").unwrap_or(0.0);
+    if price <= 1e-9 && change_pct.abs() < 1e-6 {
         return None;
     }
     Some(RibbonIndexItem {
         id: id.to_string(),
         name: label.to_string(),
-        change_pct: row.change_pct,
+        change_pct,
     })
 }
 
@@ -2462,21 +2687,79 @@ async fn fetch_ribbon_major_indices(client: &reqwest::Client) -> Vec<RibbonIndex
         })
         .map(|(c, _)| (*c).to_string())
         .collect();
-    let map = fetch_quotes_eastmoney_ulist(client, &codes_ulist)
-        .await
-        .unwrap_or_default();
-<<<<<<< HEAD
-    
-    // 单独拉取海外指数
-    let overseas_map = fetch_quotes_eastmoney_ulist(client, &["fsa50".into(), "ndx".into(), "hkhsi".into()])
-        .await
-        .unwrap_or_default();
 
-    let mut out = Vec::with_capacity(RIBBON_MAJOR_INDICES.len());
-=======
-    let mut out = Vec::with_capacity(RIBBON_MAJOR_INDICES.len() + 4);
->>>>>>> b102705aad8c82211912b06b27fe09239addbbd3
-    for (code, label) in RIBBON_MAJOR_INDICES {
+    let overseas_codes = vec!["fsa50".into(), "ndx".into(), "hkhsi".into()];
+    let (map_res, overseas_res, n225, glob_cl, glob_jm, glob_zc, dji) = futures::join!(
+        fetch_quotes_eastmoney_ulist(client, &codes_ulist),
+        fetch_quotes_eastmoney_ulist(client, &overseas_codes),
+        fetch_first_ribbon_secid(client, "glob_n225", "日经225", &["100.NKY", "100.N225"]),
+        fetch_first_ribbon_secid(
+            client,
+            "glob_cl",
+            "美原油",
+            &["102.CL00Y", "103.CL00Y", "104.CL00Y", "152.CL00Y"],
+        ),
+        fetch_first_ribbon_secid(client, "glob_jm", "焦煤", &["114.jm888", "114.jm9999", "114.JM888"]),
+        fetch_first_ribbon_secid(client, "glob_zc", "动力煤", &["220.zc888", "179.zc888", "114.zc888"]),
+        fetch_first_ribbon_secid(client, "glob_dji", "道指", &["100.DJIA", "100.DJI"]),
+    );
+
+    let map = map_res.unwrap_or_default();
+    let overseas_map = overseas_res.unwrap_or_default();
+
+    let mut out = Vec::with_capacity(RIBBON_MAJOR_INDICES.len() + 6);
+    // 顺序：上证、深证 → 日经225（地缘/外盘风向标）→ A 股宽基 → 原油、焦煤 → 恒生/A50/纳指 → 道指
+    for (code, label) in [
+        ("sh000001", "上证"),
+        ("sz399001", "深证"),
+    ] {
+        let k = code.to_lowercase();
+        let change_pct = if let Some(q) = map.get(&k) {
+            q.change_pct
+        } else {
+            fetch_one_em(client, code).await.change_pct
+        };
+        out.push(RibbonIndexItem {
+            id: k,
+            name: label.to_string(),
+            change_pct,
+        });
+    }
+    if let Some(it) = n225 {
+        out.push(it);
+    }
+    for (code, label) in [
+        ("sh000300", "沪深300"),
+        ("sz399006", "创业板"),
+        ("sh000688", "科创50"),
+    ] {
+        let k = code.to_lowercase();
+        let change_pct = if let Some(q) = map.get(&k) {
+            q.change_pct
+        } else {
+            fetch_one_em(client, code).await.change_pct
+        };
+        out.push(RibbonIndexItem {
+            id: k,
+            name: label.to_string(),
+            change_pct,
+        });
+    }
+    if let Some(it) = glob_cl {
+        out.push(it);
+    }
+    if let Some(it) = glob_jm {
+        out.push(it);
+    }
+    if let Some(it) = glob_zc {
+        out.push(it);
+    }
+
+    for (code, label) in [
+        ("hkhsi", "恒生"),
+        ("fsa50", "富时A50"),
+        ("ndx", "纳斯达克"),
+    ] {
         let k = code.to_lowercase();
         let change_pct = if k == "hkhsi" {
             if let Some(q) = overseas_map.get("hkhsi") {
@@ -2484,45 +2767,20 @@ async fn fetch_ribbon_major_indices(client: &reqwest::Client) -> Vec<RibbonIndex
             } else {
                 fetch_hk_hsi_em(client).await.change_pct
             }
-        } else if k == "fsa50" {
-            if let Some(q) = overseas_map.get("fsa50") {
-                q.change_pct
-            } else {
-                fetch_one_em(client, code).await.change_pct
-            }
-        } else if k == "ndx" {
-            if let Some(q) = overseas_map.get("ndx") {
-                q.change_pct
-            } else {
-                fetch_one_em(client, code).await.change_pct
-            }
-        } else if let Some(q) = map.get(&k) {
+        } else if let Some(q) = overseas_map.get(&k) {
             q.change_pct
         } else {
             fetch_one_em(client, code).await.change_pct
         };
         out.push(RibbonIndexItem {
-            id: k.clone(),
-            name: (*label).to_string(),
+            id: k,
+            name: label.to_string(),
             change_pct,
         });
     }
 
-    let (ftse, n225, ndx, dji) = futures::join!(
-        fetch_first_ribbon_secid(
-            client,
-            "glob_ftsea50",
-            "富时A50",
-            &["100.XIN9", "100.CN00Y"],
-        ),
-        fetch_first_ribbon_secid(client, "glob_n225", "日经225", &["100.N225", "100.NKY"]),
-        fetch_first_ribbon_secid(client, "glob_ndx", "纳指", &["100.NDX", "100.IXIC"]),
-        fetch_first_ribbon_secid(client, "glob_dji", "道指", &["100.DJIA", "100.DJI"]),
-    );
-    for g in [ftse, n225, ndx, dji] {
-        if let Some(it) = g {
-            out.push(it);
-        }
+    if let Some(it) = dji {
+        out.push(it);
     }
     out
 }
@@ -2541,6 +2799,11 @@ fn mock_market_ribbon() -> MarketRibbonSnapshot {
                 change_pct: 0.52,
             },
             RibbonIndexItem {
+                id: "glob_n225".into(),
+                name: "日经225".into(),
+                change_pct: -0.67,
+            },
+            RibbonIndexItem {
                 id: "sh000300".into(),
                 name: "沪深300".into(),
                 change_pct: 0.28,
@@ -2556,19 +2819,39 @@ fn mock_market_ribbon() -> MarketRibbonSnapshot {
                 change_pct: -0.82,
             },
             RibbonIndexItem {
+                id: "glob_cl".into(),
+                name: "美原油".into(),
+                change_pct: 0.15,
+            },
+            RibbonIndexItem {
+                id: "glob_jm".into(),
+                name: "焦煤".into(),
+                change_pct: -0.42,
+            },
+            RibbonIndexItem {
+                id: "glob_zc".into(),
+                name: "动力煤".into(),
+                change_pct: -0.31,
+            },
+            RibbonIndexItem {
                 id: "hkhsi".into(),
                 name: "恒生".into(),
                 change_pct: -0.21,
             },
             RibbonIndexItem {
-                id: "glob_ftsea50".into(),
+                id: "fsa50".into(),
                 name: "富时A50".into(),
                 change_pct: 0.41,
             },
             RibbonIndexItem {
-                id: "glob_n225".into(),
-                name: "日经225".into(),
-                change_pct: -0.67,
+                id: "ndx".into(),
+                name: "纳斯达克".into(),
+                change_pct: 0.18,
+            },
+            RibbonIndexItem {
+                id: "glob_dji".into(),
+                name: "道指".into(),
+                change_pct: 0.09,
             },
         ],
         up_count: 2650,

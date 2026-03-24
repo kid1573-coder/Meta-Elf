@@ -45,6 +45,9 @@ function positionPanel() {
 }
 
 function toggle() {
+  if (!open.value) {
+    positionPanel();
+  }
   open.value = !open.value;
 }
 

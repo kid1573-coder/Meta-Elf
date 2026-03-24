@@ -354,6 +354,9 @@ watch(
 
 function onToggleStats() {
   if (useInlineStats.value) return;
+  if (!statsOpen.value) {
+    updateFlyoutPosition();
+  }
   statsOpen.value = !statsOpen.value;
 }
 
@@ -424,27 +427,6 @@ onUnmounted(() => {
         <button type="button" class="market-ribbon__retry" @click="emit('retry')">重试</button>
       </div>
       <div v-else-if="!indices.length" class="market-ribbon__hint">暂无指数数据</div>
-<<<<<<< HEAD
-      <div v-else class="market-ribbon__marquee-clip">
-        <div class="market-ribbon__track">
-          <template v-for="dup in 2" :key="'d' + dup">
-            <template v-for="(s, i) in indices" :key="dup + '-' + i">
-              <span 
-                class="market-ribbon__index-item"
-                :class="{ 'market-ribbon__index-item--alert': Math.abs(s.changePct) >= 2.0 }"
-              >
-                <span class="market-ribbon__index-name">{{ s.name }}</span>
-                <span
-                  class="market-ribbon__index-pct"
-                  :class="changeClass(s.changePct, colorScheme)"
-                >
-                  {{ s.changePct >= 0 ? "+" : "" }}{{ fmtFixed(s.changePct, 2) }}%
-                </span>
-              </span>
-              <span class="market-ribbon__dot" aria-hidden="true">·</span>
-            </template>
-          </template>
-=======
       <div
         v-else
         class="market-ribbon__marquee-rotate-wrap"
@@ -498,7 +480,6 @@ onUnmounted(() => {
               {{ s.changePct >= 0 ? "+" : "" }}{{ fmtFixed(s.changePct, 2) }}%
             </span>
           </div>
->>>>>>> b102705aad8c82211912b06b27fe09239addbbd3
         </div>
       </div>
     </div>
@@ -693,11 +674,6 @@ onUnmounted(() => {
 .market-ribbon__chip {
   display: inline-flex;
   align-items: baseline;
-<<<<<<< HEAD
-  gap: 0 2px;
-  width: max-content;
-  animation: ribbon-marquee 52s linear infinite;
-=======
   flex-shrink: 0;
   gap: 3px;
   padding: 1px 5px 2px;
@@ -707,7 +683,6 @@ onUnmounted(() => {
   font-size: 0.78em;
   line-height: 1.25;
   animation: ribbon-chip-settle 0.18s ease-out both;
->>>>>>> b102705aad8c82211912b06b27fe09239addbbd3
 }
 
 .market-ribbon__chip--hot {
@@ -971,19 +946,10 @@ onUnmounted(() => {
 }
 
 .market-ribbon__stats-flyout {
-<<<<<<< HEAD
-  padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--yj-table-wrap-border, rgba(255, 255, 255, 0.14));
-  background: var(--yj-ctx-menu-bg, #2a2a2e);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-=======
   padding: 10px 14px 12px;
   border-radius: 10px;
   border: 1px solid var(--yj-modal-panel-border);
   background: var(--yj-modal-panel-bg);
->>>>>>> b102705aad8c82211912b06b27fe09239addbbd3
   box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
   font-size: 0.86em;
   line-height: 1.32;

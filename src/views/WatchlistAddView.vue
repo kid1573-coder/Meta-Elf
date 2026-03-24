@@ -80,6 +80,9 @@ function positionHistoryPanel() {
 }
 
 function toggleHistory() {
+  if (!historyOpen.value) {
+    positionHistoryPanel();
+  }
   historyOpen.value = !historyOpen.value;
 }
 
@@ -326,7 +329,7 @@ async function toggleGroupMembership(item: SuggestItem) {
             v-model="query"
             type="search"
             class="yj-field-control search-field"
-            placeholder="代码 / 名称 / 拼音"
+            placeholder="代码 / 名称 / 拼音（可搜：日经225、原油、焦煤等）"
             autocomplete="off"
             enterkeyhint="search"
             autofocus

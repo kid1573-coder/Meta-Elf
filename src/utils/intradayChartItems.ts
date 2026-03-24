@@ -83,7 +83,7 @@ export function intradaySessionVisibleRangeUnix(
   const sorted = [...points].sort((a, b) => a.time - b.time);
   const ymd = shanghaiYmdString(sorted[0]!.time);
   return {
-    from: shanghaiWallUnixSec(ymd, 9, 15),
+    from: shanghaiWallUnixSec(ymd, 9, 30),
     to: shanghaiWallUnixSec(ymd, 15, 0),
   };
 }
@@ -95,6 +95,7 @@ export function padIntradayLineDataWithSessionEdges<T extends { time: Time; valu
   lineData: T[],
   session: { from: number; to: number },
 ): T[] {
+  void session;
   if (lineData.length === 0) return lineData;
   let minT = Infinity;
   let maxT = -Infinity;
@@ -106,18 +107,42 @@ export function padIntradayLineDataWithSessionEdges<T extends { time: Time; valu
     }
   }
   if (!Number.isFinite(minT) || !Number.isFinite(maxT)) return lineData;
+
   const out = [...lineData];
-  if (minT > session.from) {
-    out.unshift({ time: session.from as UTCTimestamp } as T);
+  const ymd = shanghaiYmdString(minT);
+  const expectedMinutes: number[] = [];
+  
+  for (let h = 9; h <= 11; h++) {
+    for (let m = 0; m < 60; m++) {
+      if (h === 9 && m < 30) continue;
+      if (h === 11 && m > 30) continue;
+      expectedMinutes.push(shanghaiWallUnixSec(ymd, h, m));
+    }
   }
-  if (maxT < session.to) {
-    out.push({ time: session.to as UTCTimestamp } as T);
+  for (let h = 13; h <= 15; h++) {
+    for (let m = 0; m < 60; m++) {
+      if (h === 15 && m > 0) continue;
+      expectedMinutes.push(shanghaiWallUnixSec(ymd, h, m));
+    }
   }
+
+  for (const t of expectedMinutes) {
+    if (t < minT) {
+      out.push({ time: t as UTCTimestamp } as T);
+    }
+  }
+  for (const t of expectedMinutes) {
+    if (t > maxT) {
+      out.push({ time: t as UTCTimestamp } as T);
+    }
+  }
+
+  out.sort((a, b) => (a.time as number) - (b.time as number));
   return out;
 }
 
 /**
- * 分时底部固定锚点：09:15 / 09:30 / 11:30 / 13:00 / 15:00（与完整交易日横轴一致）。
+ * 分时底部固定锚点：09:30 / 11:30/13:00 / 15:00
  */
 export function buildIntradayAxisAnchors(points: IntradayPoint[]): { unix: number; label: string }[] {
   if (points.length === 0) return [];
@@ -125,23 +150,11 @@ export function buildIntradayAxisAnchors(points: IntradayPoint[]): { unix: numbe
   const first = sorted[0]!.time;
   const ymd = shanghaiYmdString(first);
   const wall = (h: number, m: number) => shanghaiWallUnixSec(ymd, h, m);
-  const lab = (h: number, m: number) => `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
   return [
-    { unix: wall(9, 15), label: lab(9, 15) },
-    { unix: wall(9, 30), label: lab(9, 30) },
-    { unix: wall(11, 30), label: lab(11, 30) },
-    { unix: wall(13, 0), label: lab(13, 0) },
-    { unix: wall(15, 0), label: lab(15, 0) },
+    { unix: wall(9, 30), label: "09:30" },
+    { unix: wall(11, 30), label: "11:30/13:00" },
+    { unix: wall(15, 0), label: "15:00" },
   ];
-  
-  // 如果最新时间不在锚点上，且距离锚点有一定距离，则加上最新时间
-  const isNearAnchor = anchors.some((a) => Math.abs(a.unix - last) < 60);
-  if (!isNearAnchor && last < wall(15, 0)) {
-    anchors.push({ unix: last, label: formatIntradayAxisHHmm(last) });
-  }
-  
-  // 按照时间排序
-  return anchors.sort((a, b) => a.unix - b.unix);
 }
 
 export function buildIntradayAvgLineDataFromItems(

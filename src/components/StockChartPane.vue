@@ -4,14 +4,11 @@ import {
   CrosshairMode,
   LineStyle,
   createChart,
-  type AutoscaleInfo,
-  type BaselineData,
   type CandlestickData,
   type HistogramData,
   type IChartApi,
   type ISeriesApi,
   type LineData,
-  type SeriesMarker,
   type Time,
   type UTCTimestamp,
   type WhitespaceData,
@@ -105,7 +102,7 @@ const rootEl = ref<HTMLElement | null>(null);
 const plotEl = ref<HTMLElement | null>(null);
 const chartApi = shallowRef<IChartApi | null>(null);
 /** 分时主图系列（昨收为零轴的 Baseline，或兜底 Line）：用于 priceToCoordinate 贴「昨收」标签 */
-const intradayLineSeries = shallowRef<ISeriesApi<"Baseline"> | ISeriesApi<"Line"> | null>(null);
+const intradayLineSeries = shallowRef<ISeriesApi<"Baseline"> | ISeriesApi<"Line"> | ISeriesApi<"Area"> | null>(null);
 /** 分时昨收标签的垂直位置（相对图表容器顶边，px） */
 const prevCloseOverlayTopPx = ref<number | null>(null);
 /** 隐藏库内置横轴后，底部自定义时间刻度（对齐 timeToCoordinate） */
@@ -169,33 +166,6 @@ const hasSeriesData = computed(() => {
   }
   return (props.kline?.points?.length ?? 0) > 0;
 });
-
-/** 分时主图纵轴：在当日价区基础上留边距，避免仅剩几根 K 时纵轴被拉满像「探索」 */
-function intradayMainAutoscaleProvider(
-  preClose: number,
-  points: IntradayPoint[],
-): (_base: AutoscaleInfo | null) => AutoscaleInfo | null {
-  return () => {
-    const vals: number[] = [];
-    if (preClose > 0) vals.push(preClose);
-    for (const p of points) {
-      if (Number.isFinite(p.close) && p.close > 0) vals.push(p.close);
-      if (p.avgPrice != null && Number.isFinite(p.avgPrice) && p.avgPrice > 0) vals.push(p.avgPrice);
-    }
-    if (vals.length === 0) return null;
-    const lo = Math.min(...vals);
-    const hi = Math.max(...vals);
-    const ref = preClose > 0 ? preClose : (lo + hi) * 0.5;
-    const span = hi - lo;
-    const pad = Math.max(span * 0.2, ref * 0.01, 1e-6);
-    return {
-      priceRange: {
-        minValue: lo - pad,
-        maxValue: hi + pad,
-      },
-    };
-  };
-}
 
 function applyIntradayTimeRange(chart: IChartApi, points: IntradayPoint[]) {
   const sessionR = intradaySessionVisibleRangeUnix(points);
@@ -367,7 +337,13 @@ function rebuildChart() {
       locale: "zh-CN",
       timeFormatter: (time: Time) => formatCrosshairTime(time, props.chartTab),
     },
+    leftPriceScale: {
+      visible: props.chartTab === "intraday",
+      borderVisible: false,
+      scaleMargins: { top: 0.08, bottom: 0.22 },
+    },
     rightPriceScale: {
+      visible: true,
       borderVisible: false,
       scaleMargins: { top: 0.08, bottom: 0.22 },
     },
@@ -406,7 +382,7 @@ function rebuildChart() {
     const pts = props.intraday.points;
     const sessionR = intradaySessionVisibleRangeUnix(pts);
     const chartItems = buildIntradayChartItems(pts);
-    let lineData: (BaselineData | WhitespaceData)[] = chartItems.map((row) =>
+    let lineData: (LineData | WhitespaceData)[] = chartItems.map((row) =>
       row.kind === "bar"
         ? { time: row.p.time as UTCTimestamp, value: row.p.close }
         : { time: row.time as UTCTimestamp },
@@ -415,10 +391,18 @@ function rebuildChart() {
       lineData = padIntradayLineDataWithSessionEdges(lineData, sessionR);
     }
     const isRedUp = props.colorScheme === "redUp";
-    const topFill1 = isRedUp ? "rgba(239, 68, 68, 0.2)" : "rgba(34, 197, 94, 0.2)";
-    const topFill2 = isRedUp ? "rgba(239, 68, 68, 0.04)" : "rgba(34, 197, 94, 0.04)";
-    const botFill1 = isRedUp ? "rgba(34, 197, 94, 0.04)" : "rgba(239, 68, 68, 0.04)";
-    const botFill2 = isRedUp ? "rgba(34, 197, 94, 0.17)" : "rgba(239, 68, 68, 0.17)";
+    
+    // 决定主线颜色（根据当前最新价与昨收对比）
+    const currentPrice = pts[pts.length - 1]?.close ?? pre;
+    const isUp = currentPrice >= pre;
+    const lineColor = isUp ? up : down;
+    const areaTop = isUp 
+      ? (isRedUp ? "rgba(239, 68, 68, 0.35)" : "rgba(34, 197, 94, 0.35)") 
+      : (isRedUp ? "rgba(34, 197, 94, 0.35)" : "rgba(239, 68, 68, 0.35)");
+    const areaBot = isUp 
+      ? (isRedUp ? "rgba(239, 68, 68, 0.0)" : "rgba(34, 197, 94, 0.0)") 
+      : (isRedUp ? "rgba(34, 197, 94, 0.0)" : "rgba(239, 68, 68, 0.0)");
+
     /* 零轴：比背景网格略醒目的虚线，仍保持中性灰 */
     const zeroAxisLineColor =
       props.theme === "light" ? "rgba(0, 0, 0, 0.12)" : "rgba(255, 255, 255, 0.16)";
@@ -439,7 +423,6 @@ function rebuildChart() {
           Math.abs(res.priceRange.maxValue - pre),
           Math.abs(res.priceRange.minValue - pre)
         );
-        // Ensure we don't collapse to zero if visible data is flat
         const finalDiff = visibleMaxDiff > 0 ? visibleMaxDiff : maxDiff;
         res.priceRange.minValue = pre - finalDiff;
         res.priceRange.maxValue = pre + finalDiff;
@@ -454,36 +437,59 @@ function rebuildChart() {
     } : undefined;
 
     if (pre > 0) {
-      const bl = chart.addBaselineSeries({
-        baseValue: { type: "price", price: pre },
+      // 右侧显示百分比
+      const area = chart.addAreaSeries({
+        lineColor: lineColor,
+        topColor: areaTop,
+        bottomColor: areaBot,
         lineWidth: 2,
         priceLineVisible: true,
         lastValueVisible: true,
-        topLineColor: up,
-        bottomLineColor: down,
-        topFillColor1: topFill1,
-        topFillColor2: topFill2,
-        bottomFillColor1: botFill1,
-        bottomFillColor2: botFill2,
         autoscaleInfoProvider,
+        priceScaleId: "right",
+        priceFormat: {
+          type: "custom",
+          formatter: (price: number) => {
+            const pct = ((price - pre) / pre) * 100;
+            return `${pct > 0 ? "+" : ""}${pct.toFixed(2)}%`;
+          },
+        },
       });
-      intradayLineSeries.value = bl;
-      bl.setData(lineData);
-      bl.createPriceLine({
+      intradayLineSeries.value = area as any;
+      area.setData(lineData);
+      area.createPriceLine({
         price: pre,
         color: zeroAxisLineColor,
-        lineWidth: 2,
+        lineWidth: 1,
         lineStyle: LineStyle.Dashed,
         axisLabelVisible: false,
       });
+
+      // 左侧显示价格（不可见线条，仅用于刻度）
+      const dummyLeft = chart.addLineSeries({
+        color: "transparent",
+        lineWidth: 1,
+        crosshairMarkerVisible: false,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        autoscaleInfoProvider,
+        priceScaleId: "left",
+        priceFormat: {
+          type: "price",
+          precision: 2,
+          minMove: 0.01,
+        },
+      });
+      dummyLeft.setData(lineData);
     } else {
       const line = chart.addLineSeries({
-        color: up,
+        color: lineColor,
         lineWidth: 2,
         priceLineVisible: true,
-        autoscaleInfoProvider: intradayScale,
+        autoscaleInfoProvider,
+        priceScaleId: "left",
       });
-      intradayLineSeries.value = line;
+      intradayLineSeries.value = line as any;
       line.setData(lineData as (LineData | WhitespaceData)[]);
     }
 
@@ -511,7 +517,27 @@ function rebuildChart() {
 
     const lineForMarkers = intradayLineSeries.value;
     if (lineForMarkers) {
-      lineForMarkers.setMarkers([]);
+      // 找出最后一个有有效值的点绘制当前价圆点
+      let lastValidPoint = null;
+      for (let i = lineData.length - 1; i >= 0; i--) {
+        if ("value" in lineData[i]!) {
+          lastValidPoint = lineData[i];
+          break;
+        }
+      }
+      if (lastValidPoint) {
+        lineForMarkers.setMarkers([
+          {
+            time: lastValidPoint.time,
+            position: "inBar",
+            color: lineColor,
+            shape: "circle",
+            size: 1,
+          },
+        ]);
+      } else {
+        lineForMarkers.setMarkers([]);
+      }
     }
 
     const mainLine = intradayLineSeries.value;
