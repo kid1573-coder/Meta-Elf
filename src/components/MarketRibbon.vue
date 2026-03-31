@@ -4,7 +4,7 @@
  * 相邻快照涨跌幅跳变时有方向性闪烁，与轮播区分）+ 右侧涨跌家数/成交额。
  * 产品侧可称「市场快览」。
  */
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import type { AppSettings } from "../types/app";
 import type { MarketRibbonSnapshot, RibbonIndex } from "../types/marketRibbon";
 import { changeClass, fmtDeltaTurnoverCn, fmtFixed, fmtTurnoverCn } from "../utils/format";
@@ -37,242 +37,89 @@ const indices = computed(() => props.snapshot?.indices ?? []);
 const sectorGainers = computed(() => props.snapshot?.sectorGainers ?? []);
 const sectorLosers = computed(() => props.snapshot?.sectorLosers ?? []);
 
-/** 两次刷新间涨跌幅变化小于该值（百分点）视为「无动静」 */
-const RIBBON_QUIET_EPS = 0.025;
-/** 连续若干次无动静后不再占底栏（15s×80≈20min，与 MainPanel ribbon 轮询一致） */
-const RIBBON_STALE_AFTER_POLLS = 80;
-/**
- * |涨跌幅|≥此值不因「长期无波动」移出 spotlight（隔夜外盘、持续偏强/偏弱）
- * 高亮样式另见 RIBBON_HOT_ABS_PCT
- */
-const RIBBON_STICKY_ABS_PCT = 0.35;
-/** |涨跌幅|≥此值 chip 使用醒目样式 */
-const RIBBON_HOT_ABS_PCT = 0.5;
-/**
- * 相邻两次快照间 |Δ涨跌幅|≥此值（百分点）视为「快速变动」，播放方向性闪烁，与定时轮播区分
- *（应明显大于 RIBBON_QUIET_EPS）
- */
-const RIBBON_FAST_MOVE_DELTA = 0.06;
+/** Δ（这轮-上轮涨跌幅）≥此值视为「明显异动」，播方向动画 */
+const RIBBON_DELTA_THRESH_MID = 0.2;
 
-/** 活跃指数超过该数量时轮播展示（减少动效偏好下改为横向滚动全部） */
-function maxActiveChipsForWidth(w: number): number {
-  if (w < 420) return 2;
-  if (w < 640) return 3;
-  return 4;
-}
+type RibbonIndexState = {
+  lastPct: number;
+  delta: number;
+};
 
-type RibbonQuietState = { lastPct: number; quietStreak: number };
-const ribbonQuietById = ref<Map<string, RibbonQuietState>>(new Map());
+const ribbonStates = ref<Map<string, RibbonIndexState>>(new Map());
 
-/** 快速变动：按涨跌方向闪烁（与轮播换条无关） */
-type RibbonFlashKind = "pos" | "neg";
-const ribbonFlashById = ref<Map<string, RibbonFlashKind>>(new Map());
-
-/** 需在 indices 的 watch 之前声明，避免回调里读到 TDZ */
-const reduceMotion = ref(false);
+/** 记录哪些 index 当前正在播放方向动画（key=index key） */
+const ribbonAnimatingUp = ref<Set<string>>(new Set());
+const ribbonAnimatingDn = ref<Set<string>>(new Set());
 
 function ribbonIndexKey(it: RibbonIndex): string {
   const k = (it.id || it.name || "").trim();
   return k || "_";
 }
 
+/**
+ * 每次快照更新时计算 Δ = changePct_本轮 - changePct_上轮。
+ * Δ > 0 → 短线向上（回升）；Δ < 0 → 短线向下（回落）。
+ * Δ 的绝对值越大 → 短线异动越强 → 越应该排在前面。
+ */
 watch(
   () => props.snapshot?.indices,
   (list) => {
     if (!list?.length) {
-      ribbonQuietById.value = new Map();
-      ribbonFlashById.value = new Map();
+      ribbonStates.value = new Map();
+      ribbonAnimatingUp.value = new Set();
+      ribbonAnimatingDn.value = new Set();
       return;
     }
-    const next = new Map(ribbonQuietById.value);
-    const noAnim = reduceMotion.value;
-    const fastMoveByKey = new Map<string, RibbonFlashKind>();
+    const next = new Map(ribbonStates.value);
 
-    for (const it of list) {
-      const key = ribbonIndexKey(it);
+    for (const idx of list) {
+      const key = ribbonIndexKey(idx);
       const existing = next.get(key);
       if (!existing) {
-        next.set(key, { lastPct: it.changePct, quietStreak: 0 });
+        next.set(key, { lastPct: idx.changePct, delta: 0 });
         continue;
       }
-      const delta = it.changePct - existing.lastPct;
-      let { lastPct, quietStreak } = existing;
-      if (Math.abs(it.changePct - lastPct) < RIBBON_QUIET_EPS) {
-        quietStreak += 1;
-      } else {
-        quietStreak = 0;
-        lastPct = it.changePct;
-      }
-      next.set(key, { lastPct, quietStreak });
+      const delta = idx.changePct - existing.lastPct;
+      next.set(key, { lastPct: idx.changePct, delta });
 
-      if (!noAnim && Math.abs(delta) >= RIBBON_FAST_MOVE_DELTA) {
-        fastMoveByKey.set(key, delta >= 0 ? "pos" : "neg");
+      /* 触发方向动画：Δ 明显为正 → 向上跳；Δ 明显为负 → 向下跳 */
+      if (Math.abs(delta) >= RIBBON_DELTA_THRESH_MID) {
+        if (delta > 0) {
+          ribbonAnimatingDn.value.delete(key);
+          ribbonAnimatingUp.value.add(key);
+          setTimeout(() => ribbonAnimatingUp.value.delete(key), 750);
+        } else {
+          ribbonAnimatingUp.value.delete(key);
+          ribbonAnimatingDn.value.add(key);
+          setTimeout(() => ribbonAnimatingDn.value.delete(key), 750);
+        }
+      } else {
+        ribbonAnimatingUp.value.delete(key);
+        ribbonAnimatingDn.value.delete(key);
       }
     }
-    ribbonQuietById.value = next;
-
-    const fastMoves = [...fastMoveByKey.entries()].map(([key, kind]) => ({ key, kind }));
-    if (!fastMoves.length) return;
-    const cleared = new Map(ribbonFlashById.value);
-    for (const f of fastMoves) cleared.delete(f.key);
-    ribbonFlashById.value = cleared;
-    nextTick(() => {
-      const m = new Map(ribbonFlashById.value);
-      for (const f of fastMoves) m.set(f.key, f.kind);
-      ribbonFlashById.value = m;
-    });
+    ribbonStates.value = next;
   },
   { deep: true },
 );
 
-function ribbonChipFlashClass(key: string): Record<string, boolean> {
-  const k = ribbonFlashById.value.get(key);
-  return {
-    "market-ribbon__chip--flash-pos": k === "pos",
-    "market-ribbon__chip--flash-neg": k === "neg",
-  };
-}
-
-function onRibbonChipFlashEnd(e: AnimationEvent, key: string) {
-  const n = e.animationName;
-  if (n !== "ribbon-flash-bump-pos" && n !== "ribbon-flash-bump-neg") return;
-  if (!ribbonFlashById.value.has(key)) return;
-  const m = new Map(ribbonFlashById.value);
-  m.delete(key);
-  ribbonFlashById.value = m;
-}
-
-/** 盯盘：有波动或涨跌幅够大才占栏位；按 |涨跌| 排序，大变动更显眼 */
-const ribbonSpotlightIndices = computed(() => {
+/** 短线异动最强的指数排在最前：主排序 = |Δ|，次排序 = |changePct| */
+const ribbonSpotlightIndices = computed((): RibbonIndex[] => {
   const list = props.snapshot?.indices ?? [];
   if (!list.length) return [];
-  const m = ribbonQuietById.value;
-  const active = list.filter((it) => {
-    const st = m.get(ribbonIndexKey(it));
-    const streak = st?.quietStreak ?? 0;
-    return streak < RIBBON_STALE_AFTER_POLLS || Math.abs(it.changePct) >= RIBBON_STICKY_ABS_PCT;
+  const states = ribbonStates.value;
+  return [...list].sort((a, b) => {
+    const sa = states.get(ribbonIndexKey(a));
+    const sb = states.get(ribbonIndexKey(b));
+    const da = Math.abs(sa?.delta ?? 0);
+    const db = Math.abs(sb?.delta ?? 0);
+    if (db !== da) return db - da;
+    const pa = Math.abs(a.changePct);
+    const pb = Math.abs(b.changePct);
+    if (pb !== pa) return pb - pa;
+    return ribbonIndexKey(a).localeCompare(ribbonIndexKey(b));
   });
-  if (!active.length) return [];
-  return [...active].sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct));
 });
-
-const ribbonCalmHint = computed(() => {
-  const n = props.snapshot?.indices?.length ?? 0;
-  return n > 0 && ribbonSpotlightIndices.value.length === 0;
-});
-
-const maxActiveChips = computed(() => maxActiveChipsForWidth(ribbonWidth.value));
-
-const ribbonMarqueePaused = ref(false);
-const rotateOffsetActive = ref(0);
-const calmSlotIndex = ref(0);
-
-type CalmSlot = { kind: "hint" } | { kind: "idx"; it: RibbonIndex };
-
-/** 沉寂模式：逐个指数简报，每满 3 条插入一次说明文案 */
-const calmSlots = computed((): CalmSlot[] => {
-  const list = indices.value;
-  const slots: CalmSlot[] = [];
-  list.forEach((it, i) => {
-    slots.push({ kind: "idx", it });
-    if ((i + 1) % 3 === 0) slots.push({ kind: "hint" });
-  });
-  return slots;
-});
-
-const activeNeedsRotation = computed(() => {
-  const list = ribbonSpotlightIndices.value;
-  return list.length > maxActiveChips.value && !reduceMotion.value;
-});
-
-const ribbonVisibleSpotlight = computed((): RibbonIndex[] => {
-  const list = ribbonSpotlightIndices.value;
-  const cap = maxActiveChips.value;
-  if (!list.length) return [];
-  if (!activeNeedsRotation.value) return list;
-  const n = list.length;
-  const off = ((rotateOffsetActive.value % n) + n) % n;
-  const out: RibbonIndex[] = [];
-  for (let i = 0; i < Math.min(cap, n); i++) {
-    out.push(list[(off + i) % n]!);
-  }
-  return out;
-});
-
-const currentCalmSlot = computed((): CalmSlot | null => {
-  const slots = calmSlots.value;
-  if (!slots.length) return null;
-  const i = ((calmSlotIndex.value % slots.length) + slots.length) % slots.length;
-  return slots[i] ?? null;
-});
-
-const CALM_HINT_TEXT =
-  "主要指数窄幅波动，底栏仅在有动静时突出展示（市场快览里仍有涨跌家数与板块）";
-
-const marqueeTickIntervalMs = computed(() => {
-  if (!indices.value.length || (props.loading && !props.snapshot)) return 0;
-  if (ribbonCalmHint.value) {
-    return reduceMotion.value ? 18_000 : 5000;
-  }
-  if (activeNeedsRotation.value) return reduceMotion.value ? 0 : 5000;
-  return 0;
-});
-
-let marqueeRotateTimer: ReturnType<typeof setInterval> | null = null;
-
-function clearMarqueeRotateTimer() {
-  if (marqueeRotateTimer != null) {
-    clearInterval(marqueeRotateTimer);
-    marqueeRotateTimer = null;
-  }
-}
-
-function tickMarqueeRotate() {
-  if (ribbonMarqueePaused.value) return;
-  if (ribbonCalmHint.value) {
-    const slots = calmSlots.value;
-    if (slots.length) calmSlotIndex.value = (calmSlotIndex.value + 1) % slots.length;
-    return;
-  }
-  const list = ribbonSpotlightIndices.value;
-  const cap = maxActiveChips.value;
-  if (list.length > cap && !reduceMotion.value) {
-    rotateOffsetActive.value = (rotateOffsetActive.value + 1) % list.length;
-  }
-}
-
-function restartMarqueeRotateTimer() {
-  clearMarqueeRotateTimer();
-  const ms = marqueeTickIntervalMs.value;
-  if (ms <= 0) return;
-  marqueeRotateTimer = setInterval(tickMarqueeRotate, ms);
-}
-
-let reduceMotionMql: MediaQueryList | null = null;
-let reduceMotionListener: (() => void) | null = null;
-
-watch(marqueeTickIntervalMs, () => {
-  restartMarqueeRotateTimer();
-});
-
-watch(ribbonCalmHint, (calm) => {
-  rotateOffsetActive.value = 0;
-  if (calm) calmSlotIndex.value = 0;
-});
-
-watch(
-  () => calmSlots.value.length,
-  () => {
-    if (ribbonCalmHint.value) calmSlotIndex.value = 0;
-  },
-);
-
-watch(
-  () => ribbonSpotlightIndices.value.map((x) => ribbonIndexKey(x)).join("\0"),
-  () => {
-    rotateOffsetActive.value = 0;
-  },
-);
 
 const deltaYuan = computed(() => {
   const s = props.snapshot;
@@ -298,7 +145,6 @@ function updateFlyoutPosition() {
   const r = btn.getBoundingClientRect();
   const pad = 8;
   const avail = window.innerWidth - pad * 2;
-  /* 横向卡片：偏宽、偏低，减少「窄高条」违和感 */
   const maxW = Math.min(720, Math.max(440, Math.floor(window.innerWidth * 0.78)), avail);
   flyoutStyle.value = {
     position: "fixed",
@@ -386,27 +232,6 @@ onMounted(() => {
     ro.observe(el);
     ribbonWidth.value = el.getBoundingClientRect().width;
   }
-  reduceMotionMql = window.matchMedia("(prefers-reduced-motion: reduce)");
-  reduceMotion.value = reduceMotionMql.matches;
-  reduceMotionListener = () => {
-    reduceMotion.value = reduceMotionMql?.matches ?? false;
-  };
-  reduceMotionMql.addEventListener("change", reduceMotionListener);
-  restartMarqueeRotateTimer();
-});
-
-onUnmounted(() => {
-  window.removeEventListener("resize", onWinResizeOrScroll);
-  window.removeEventListener("scroll", onWinResizeOrScroll, true);
-  window.removeEventListener("keydown", onKeydown);
-  ro?.disconnect();
-  docDownCleanup?.();
-  clearMarqueeRotateTimer();
-  if (reduceMotionMql && reduceMotionListener) {
-    reduceMotionMql.removeEventListener("change", reduceMotionListener);
-  }
-  reduceMotionMql = null;
-  reduceMotionListener = null;
 });
 </script>
 
@@ -427,59 +252,28 @@ onUnmounted(() => {
         <button type="button" class="market-ribbon__retry" @click="emit('retry')">重试</button>
       </div>
       <div v-else-if="!indices.length" class="market-ribbon__hint">暂无指数数据</div>
-      <div
-        v-else
-        class="market-ribbon__marquee-rotate-wrap"
-        @mouseenter="ribbonMarqueePaused = true"
-        @mouseleave="ribbonMarqueePaused = false"
-      >
-        <div v-if="ribbonCalmHint" class="market-ribbon__calm-rotate">
-          <p
-            v-if="currentCalmSlot?.kind === 'hint'"
-            key="calm-hint"
-            class="market-ribbon__hint market-ribbon__hint--calm"
+      <div v-else class="market-ribbon__chip-scroll" role="list">
+        <div
+          v-for="s in ribbonSpotlightIndices"
+          :key="ribbonIndexKey(s)"
+          class="market-ribbon__chip"
+          :class="[
+            /* 背景色：当前涨跌（涨=红/绿，跌=绿/红），始终反映实际所处状态 */
+            s.changePct >= 0 ? 'market-ribbon__chip--up' : 'market-ribbon__chip--dn',
+            /* Δ > 0 且明显 → 向上跳动画 */
+            ribbonAnimatingUp.has(ribbonIndexKey(s)) ? 'market-ribbon__chip--anim-up' : '',
+            /* Δ < 0 且明显 → 向下跳动画 */
+            ribbonAnimatingDn.has(ribbonIndexKey(s)) ? 'market-ribbon__chip--anim-dn' : '',
+          ]"
+          role="listitem"
+        >
+          <span class="market-ribbon__index-name">{{ s.name }}</span>
+          <span
+            class="market-ribbon__index-pct"
+            :class="changeClass(s.changePct, colorScheme)"
           >
-            {{ CALM_HINT_TEXT }}
-          </p>
-          <div
-            v-else-if="currentCalmSlot?.kind === 'idx'"
-            :key="'calm-' + ribbonIndexKey(currentCalmSlot.it)"
-            class="market-ribbon__chip market-ribbon__chip--calm"
-            :class="ribbonChipFlashClass(ribbonIndexKey(currentCalmSlot.it))"
-            role="listitem"
-            @animationend="onRibbonChipFlashEnd($event, ribbonIndexKey(currentCalmSlot.it))"
-          >
-            <span class="market-ribbon__index-name market-ribbon__index-name--calm">{{
-              currentCalmSlot.it.name
-            }}</span>
-            <span
-              class="market-ribbon__index-pct"
-              :class="changeClass(currentCalmSlot.it.changePct, colorScheme)"
-            >
-              {{ currentCalmSlot.it.changePct >= 0 ? "+" : "" }}{{ fmtFixed(currentCalmSlot.it.changePct, 2) }}%
-            </span>
-          </div>
-        </div>
-        <div v-else class="market-ribbon__chip-scroll" role="list">
-          <div
-            v-for="s in ribbonVisibleSpotlight"
-            :key="ribbonIndexKey(s)"
-            class="market-ribbon__chip"
-            :class="[
-              { 'market-ribbon__chip--hot': Math.abs(s.changePct) >= RIBBON_HOT_ABS_PCT },
-              ribbonChipFlashClass(ribbonIndexKey(s)),
-            ]"
-            role="listitem"
-            @animationend="onRibbonChipFlashEnd($event, ribbonIndexKey(s))"
-          >
-            <span class="market-ribbon__index-name">{{ s.name }}</span>
-            <span
-              class="market-ribbon__index-pct"
-              :class="changeClass(s.changePct, colorScheme)"
-            >
-              {{ s.changePct >= 0 ? "+" : "" }}{{ fmtFixed(s.changePct, 2) }}%
-            </span>
-          </div>
+            {{ s.changePct >= 0 ? "+" : "" }}{{ fmtFixed(s.changePct, 2) }}%
+          </span>
         </div>
       </div>
     </div>
@@ -640,21 +434,6 @@ onUnmounted(() => {
   mask-image: linear-gradient(90deg, transparent, #000 6px, #000 calc(100% - 6px), transparent);
 }
 
-.market-ribbon__marquee-rotate-wrap {
-  min-width: 0;
-  flex: 1;
-  display: flex;
-  align-items: center;
-}
-
-.market-ribbon__calm-rotate {
-  min-width: 0;
-  flex: 1;
-  display: flex;
-  align-items: center;
-  min-height: 1.45em;
-}
-
 .market-ribbon__chip-scroll {
   display: flex;
   flex-wrap: nowrap;
@@ -679,137 +458,52 @@ onUnmounted(() => {
   padding: 1px 5px 2px;
   border-radius: 5px;
   border: 1px solid color-mix(in srgb, var(--yj-row-border) 65%, transparent);
-  background: color-mix(in srgb, var(--yj-table-wrap-bg) 50%, transparent);
   font-size: 0.78em;
   line-height: 1.25;
-  animation: ribbon-chip-settle 0.18s ease-out both;
+  /* 数据刷新时平滑过渡背景色 */
+  transition: background-color 0.35s ease, border-color 0.35s ease, box-shadow 0.35s ease;
 }
 
-.market-ribbon__chip--hot {
-  border-color: color-mix(in srgb, var(--yj-text-muted) 30%, var(--yj-row-border));
-  box-shadow: 0 0 0 1px color-mix(in srgb, #e8c547 16%, transparent);
+/* 背景色：反映当前涨跌状态（涨=红/绿，跌=绿/红） */
+.market-ribbon__chip--up {
+  background: color-mix(in srgb, rgb(251, 113, 133) 12%, var(--yj-table-wrap-bg) 55%);
+  border-color: color-mix(in srgb, rgb(251, 113, 133) 45%, var(--yj-row-border));
+}
+.market-ribbon--green-up .market-ribbon__chip--up {
+  background: color-mix(in srgb, rgb(74, 222, 128) 12%, var(--yj-table-wrap-bg) 55%);
+  border-color: color-mix(in srgb, rgb(74, 222, 128) 45%, var(--yj-row-border));
 }
 
-/* 相邻快照涨跌幅跳变：方向性弹跳 + 光晕，与定时轮播的轻微 settle 区分 */
-.market-ribbon__chip--flash-pos {
-  --ribbon-flash-rgb: 251, 113, 133;
-  animation: ribbon-flash-bump-pos 0.88s cubic-bezier(0.33, 1.06, 0.52, 1) 1;
-  z-index: 1;
+.market-ribbon__chip--dn {
+  background: color-mix(in srgb, rgb(74, 222, 128) 12%, var(--yj-table-wrap-bg) 55%);
+  border-color: color-mix(in srgb, rgb(74, 222, 128) 45%, var(--yj-row-border));
+}
+.market-ribbon--green-up .market-ribbon__chip--dn {
+  background: color-mix(in srgb, rgb(251, 113, 133) 12%, var(--yj-table-wrap-bg) 55%);
+  border-color: color-mix(in srgb, rgb(251, 113, 133) 45%, var(--yj-row-border));
 }
 
-.market-ribbon__chip--flash-neg {
-  --ribbon-flash-rgb: 74, 222, 128;
-  animation: ribbon-flash-bump-neg 0.88s cubic-bezier(0.33, 1.06, 0.52, 1) 1;
-  z-index: 1;
+/* 短线异动方向动画：Δ > 0 → 向上跳，Δ < 0 → 向下跳，|Δ| 越大跳幅越大 */
+@keyframes ribbon-chip-up {
+  0% { transform: translateY(0); }
+  20% { transform: translateY(-3px); }
+  50% { transform: translateY(-1px); }
+  100% { transform: translateY(0); }
 }
 
-.market-ribbon--green-up .market-ribbon__chip--flash-pos {
-  --ribbon-flash-rgb: 74, 222, 128;
+@keyframes ribbon-chip-dn {
+  0% { transform: translateY(0); }
+  20% { transform: translateY(3px); }
+  50% { transform: translateY(1px); }
+  100% { transform: translateY(0); }
 }
 
-.market-ribbon--green-up .market-ribbon__chip--flash-neg {
-  --ribbon-flash-rgb: 251, 113, 133;
+.market-ribbon__chip--anim-up {
+  animation: ribbon-chip-up 0.7s cubic-bezier(0.32, 0.72, 0.24, 1) both;
 }
 
-.market-ribbon__chip--calm {
-  border-color: color-mix(in srgb, var(--yj-row-border) 55%, transparent);
-  background: color-mix(in srgb, var(--yj-table-wrap-bg) 35%, transparent);
-  animation: none;
-  max-width: 100%;
-}
-
-.market-ribbon__chip--calm.market-ribbon__chip--flash-pos {
-  animation-name: ribbon-flash-bump-pos;
-  animation-duration: 0.88s;
-  animation-timing-function: cubic-bezier(0.33, 1.06, 0.52, 1);
-  animation-iteration-count: 1;
-}
-
-.market-ribbon__chip--calm.market-ribbon__chip--flash-neg {
-  animation-name: ribbon-flash-bump-neg;
-  animation-duration: 0.88s;
-  animation-timing-function: cubic-bezier(0.33, 1.06, 0.52, 1);
-  animation-iteration-count: 1;
-}
-
-.market-ribbon__index-name--calm {
-  color: var(--yj-text-muted);
-  font-weight: 500;
-}
-
-.market-ribbon--light .market-ribbon__chip--hot {
-  box-shadow: 0 0 0 1px color-mix(in srgb, #b45309 14%, transparent);
-}
-
-@keyframes ribbon-flash-bump-pos {
-  0%,
-  100% {
-    transform: translateY(0);
-    box-shadow: none;
-  }
-  16% {
-    transform: translateY(-3px);
-    box-shadow:
-      0 0 0 1px rgb(var(--ribbon-flash-rgb) / 0.45),
-      0 0 14px 3px rgb(var(--ribbon-flash-rgb) / 0.32);
-  }
-  42% {
-    transform: translateY(-1px);
-    box-shadow: 0 0 0 1px rgb(var(--ribbon-flash-rgb) / 0.2);
-  }
-}
-
-@keyframes ribbon-flash-bump-neg {
-  0%,
-  100% {
-    transform: translateY(0);
-    box-shadow: none;
-  }
-  16% {
-    transform: translateY(3px);
-    box-shadow:
-      0 0 0 1px rgb(var(--ribbon-flash-rgb) / 0.45),
-      0 0 14px 3px rgb(var(--ribbon-flash-rgb) / 0.32);
-  }
-  42% {
-    transform: translateY(1px);
-    box-shadow: 0 0 0 1px rgb(var(--ribbon-flash-rgb) / 0.2);
-  }
-}
-
-.market-ribbon--light .market-ribbon__index-name--calm {
-  color: var(--yj-text-muted);
-}
-
-@keyframes ribbon-chip-settle {
-  from {
-    opacity: 0.82;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-.market-ribbon__index-item {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 0 4px;
-  border-radius: 4px;
-  transition: background-color 0.3s ease;
-}
-
-.market-ribbon__index-item--alert {
-  animation: ribbon-alert-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-}
-
-@keyframes ribbon-alert-pulse {
-  0%, 100% {
-    background-color: transparent;
-  }
-  50% {
-    background-color: color-mix(in srgb, var(--yj-text, #fff) 12%, transparent);
-  }
+.market-ribbon__chip--anim-dn {
+  animation: ribbon-chip-dn 0.7s cubic-bezier(0.32, 0.72, 0.24, 1) both;
 }
 
 .market-ribbon__index-name {
@@ -825,12 +519,6 @@ onUnmounted(() => {
   font-weight: 600;
   white-space: nowrap;
   font-size: 0.98em;
-}
-
-.market-ribbon__hint--calm {
-  font-size: 0.82em;
-  line-height: 1.3;
-  white-space: normal;
 }
 
 .market-ribbon__hint {
@@ -874,27 +562,12 @@ onUnmounted(() => {
   padding: 4px 9px;
   border-radius: 7px;
   border: 1px solid var(--yj-modal-panel-border);
-  /* 勿用 table-wrap 半透明底：透明窗口下与背后跑马灯叠字 */
   background: var(--yj-modal-panel-bg);
   box-shadow: 0 2px 14px rgba(0, 0, 0, 0.28);
 }
 
 .market-ribbon--light .market-ribbon__stats--inline {
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.07);
-}
-
-.market-ribbon__stats--stacked {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 6px;
-  white-space: normal;
-}
-
-.market-ribbon__stats-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px 10px;
 }
 
 .market-ribbon__stats-toggle {
@@ -921,19 +594,6 @@ onUnmounted(() => {
 .market-ribbon__stats-toggle:hover {
   opacity: 1;
   filter: brightness(1.08);
-}
-
-.market-ribbon__stats-toggle--open {
-  /* 移除这里的 transform，交给内部的 icon 处理 */
-}
-
-.market-ribbon__stats-toggle--inline {
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  font-size: 0.6em;
-  margin-left: 0;
-  margin-right: 8px;
 }
 
 .market-ribbon__stats-toggle-icon {
@@ -1044,7 +704,6 @@ onUnmounted(() => {
   padding: 0;
 }
 
-/* 每侧 6 条排成 2 列 × 3 行，降低总高度 */
 .market-ribbon__sector-list--twocol {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);

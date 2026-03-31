@@ -1,5 +1,14 @@
 import type { AppSettings } from "../types/app";
 
+/** 按 Unicode 码位截断（适合中文），不超过 maxChars 个字 */
+export function truncateUnicodeChars(s: string, maxChars: number): string {
+  const t = s.trim();
+  if (!t) return "";
+  const chars = [...t];
+  if (chars.length <= maxChars) return t;
+  return chars.slice(0, maxChars).join("");
+}
+
 export function fmtFixed(n: number, digits: number) {
   if (!Number.isFinite(n)) return "—";
   return n.toFixed(digits);

@@ -157,6 +157,35 @@ export function buildIntradayAxisAnchors(points: IntradayPoint[]): { unix: numbe
   ];
 }
 
+/**
+ * 生成完整交易时段（09:30-11:30 + 13:00-15:00）每分钟的「锚定值」数据，
+ * 所有点的 value 设为 fillValue（通常是昨收价），用于透明辅助线锚定横轴。
+ * 与 whitespace 不同，这些是真实 value 数据点，lightweight-charts 的
+ * fitContent / setVisibleRange / timeToCoordinate 才会正确识别它们。
+ */
+export function buildSessionAnchorLineData(
+  points: IntradayPoint[],
+  fillValue: number,
+): { time: number; value: number }[] {
+  if (points.length === 0 || !Number.isFinite(fillValue)) return [];
+  const ymd = shanghaiYmdString(points[0]!.time);
+  const out: { time: number; value: number }[] = [];
+  for (let h = 9; h <= 11; h++) {
+    for (let m = 0; m < 60; m++) {
+      if (h === 9 && m < 30) continue;
+      if (h === 11 && m > 30) continue;
+      out.push({ time: shanghaiWallUnixSec(ymd, h, m), value: fillValue });
+    }
+  }
+  for (let h = 13; h <= 15; h++) {
+    for (let m = 0; m < 60; m++) {
+      if (h === 15 && m > 0) continue;
+      out.push({ time: shanghaiWallUnixSec(ymd, h, m), value: fillValue });
+    }
+  }
+  return out;
+}
+
 export function buildIntradayAvgLineDataFromItems(
   items: IntradayChartItem[],
 ): { time: number; value?: number }[] {

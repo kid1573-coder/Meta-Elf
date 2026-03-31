@@ -43,8 +43,8 @@ import {
   buildIntradayAxisAnchors,
   buildIntradayAvgLineDataFromItems,
   buildIntradayChartItems,
+  buildSessionAnchorLineData,
   intradaySessionVisibleRangeUnix,
-  padIntradayLineDataWithSessionEdges,
 } from "../utils/intradayChartItems";
 import { changeClass, fmtFixed } from "../utils/format";
 
@@ -380,28 +380,19 @@ function rebuildChart() {
   if (props.chartTab === "intraday" && props.intraday?.points?.length) {
     const pre = intradayPrevClosePrice();
     const pts = props.intraday.points;
-    const sessionR = intradaySessionVisibleRangeUnix(pts);
     const chartItems = buildIntradayChartItems(pts);
-    let lineData: (LineData | WhitespaceData)[] = chartItems.map((row) =>
+    const lineData: (LineData | WhitespaceData)[] = chartItems.map((row) =>
       row.kind === "bar"
         ? { time: row.p.time as UTCTimestamp, value: row.p.close }
         : { time: row.time as UTCTimestamp },
     );
-    if (sessionR) {
-      lineData = padIntradayLineDataWithSessionEdges(lineData, sessionR);
-    }
-    const isRedUp = props.colorScheme === "redUp";
+    const sessionAnchorData = pre > 0
+      ? buildSessionAnchorLineData(pts, pre)
+      : [];
     
-    // 决定主线颜色（根据当前最新价与昨收对比）
     const currentPrice = pts[pts.length - 1]?.close ?? pre;
     const isUp = currentPrice >= pre;
     const lineColor = isUp ? up : down;
-    const areaTop = isUp 
-      ? (isRedUp ? "rgba(239, 68, 68, 0.35)" : "rgba(34, 197, 94, 0.35)") 
-      : (isRedUp ? "rgba(34, 197, 94, 0.35)" : "rgba(239, 68, 68, 0.35)");
-    const areaBot = isUp 
-      ? (isRedUp ? "rgba(239, 68, 68, 0.0)" : "rgba(34, 197, 94, 0.0)") 
-      : (isRedUp ? "rgba(34, 197, 94, 0.0)" : "rgba(239, 68, 68, 0.0)");
 
     /* 零轴：比背景网格略醒目的虚线，仍保持中性灰 */
     const zeroAxisLineColor =
@@ -437,35 +428,8 @@ function rebuildChart() {
     } : undefined;
 
     if (pre > 0) {
-      // 右侧显示百分比
-      const area = chart.addAreaSeries({
-        lineColor: lineColor,
-        topColor: areaTop,
-        bottomColor: areaBot,
-        lineWidth: 2,
-        priceLineVisible: true,
-        lastValueVisible: true,
-        autoscaleInfoProvider,
-        priceScaleId: "right",
-        priceFormat: {
-          type: "custom",
-          formatter: (price: number) => {
-            const pct = ((price - pre) / pre) * 100;
-            return `${pct > 0 ? "+" : ""}${pct.toFixed(2)}%`;
-          },
-        },
-      });
-      intradayLineSeries.value = area as any;
-      area.setData(lineData);
-      area.createPriceLine({
-        price: pre,
-        color: zeroAxisLineColor,
-        lineWidth: 1,
-        lineStyle: LineStyle.Dashed,
-        axisLabelVisible: false,
-      });
-
-      // 左侧显示价格（不可见线条，仅用于刻度）
+      // 透明辅助线：用真实值数据锚定 09:30-15:00 完整交易时段 + 左侧价格刻度
+      // 必须在主线之前添加，使 fitContent 先看到完整时段
       const dummyLeft = chart.addLineSeries({
         color: "transparent",
         lineWidth: 1,
@@ -480,7 +444,35 @@ function rebuildChart() {
           minMove: 0.01,
         },
       });
-      dummyLeft.setData(lineData);
+      dummyLeft.setData(
+        sessionAnchorData.map((d) => ({ time: d.time as UTCTimestamp, value: d.value })),
+      );
+
+      const mainLine = chart.addLineSeries({
+        color: lineColor,
+        lineWidth: 2,
+        priceLineVisible: true,
+        lastValueVisible: true,
+        autoscaleInfoProvider,
+        priceScaleId: "right",
+        crosshairMarkerRadius: 4,
+        priceFormat: {
+          type: "custom",
+          formatter: (price: number) => {
+            const pct = ((price - pre) / pre) * 100;
+            return `${pct > 0 ? "+" : ""}${pct.toFixed(2)}%`;
+          },
+        },
+      });
+      intradayLineSeries.value = mainLine as any;
+      mainLine.setData(lineData);
+      mainLine.createPriceLine({
+        price: pre,
+        color: zeroAxisLineColor,
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: false,
+      });
     } else {
       const line = chart.addLineSeries({
         color: lineColor,
@@ -496,14 +488,11 @@ function rebuildChart() {
     const avgColor =
       props.theme === "light" ? "rgba(161, 98, 7, 0.95)" : "rgba(234, 179, 8, 0.9)";
     const avgRaw = buildIntradayAvgLineDataFromItems(chartItems);
-    let avgData: (LineData | WhitespaceData)[] = avgRaw.map((x) =>
+    const avgData: (LineData | WhitespaceData)[] = avgRaw.map((x) =>
       x.value != null && Number.isFinite(x.value)
         ? { time: x.time as UTCTimestamp, value: x.value }
         : { time: x.time as UTCTimestamp },
     );
-    if (sessionR) {
-      avgData = padIntradayLineDataWithSessionEdges(avgData, sessionR);
-    }
     if (avgData.length > 0) {
       const avgLine = chart.addLineSeries({
         color: avgColor,
@@ -545,6 +534,11 @@ function rebuildChart() {
       mainLine.priceScale().applyOptions({
         scaleMargins: { top: 0.05, bottom: 0.05 },
       });
+      if (pre > 0) {
+        chart.priceScale("left").applyOptions({
+          scaleMargins: { top: 0.05, bottom: 0.05 },
+        });
+      }
     }
     chart.timeScale().fitContent();
     chart.timeScale().applyOptions({ rightOffset: 0, fixRightEdge: true });

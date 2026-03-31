@@ -4,7 +4,7 @@ use rand::Rng;
 use reqwest::header::{HeaderMap, HeaderValue, REFERER, USER_AGENT};
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 /// 单行行情（与前端列 id 对应的数据字段）
@@ -33,6 +33,18 @@ pub struct QuoteRow {
     /// 卖一量（手）
     #[serde(default)]
     pub ask1_vol: u64,
+    /// 东财 `ulist` 量比 `f10`（盯盘列）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_ratio: Option<f64>,
+    /// 东财行业板块名 `f100`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sector: Option<String>,
+    /// 同行业板块当日涨跌幅（%），由 `clist` 行业列表按名称映射
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sector_change_pct: Option<f64>,
+    /// 东财行业板块代码（`BK`+数字，如 `BK0482`），仅服务端填板块涨幅用，不下发前端
+    #[serde(skip)]
+    pub industry_board_code: Option<String>,
 }
 
 /// 搜索联想结果（前端添加自选用）
@@ -102,6 +114,10 @@ fn row(code: &str, name: &str, price: f64, change_pct: f64) -> QuoteRow {
         ask1: price + 0.01,
         bid1_vol: 12_000,
         ask1_vol: 12_000,
+        volume_ratio: Some(1.25),
+        sector: Some("示例板块".into()),
+        sector_change_pct: Some(0.88),
+        industry_board_code: None,
     }
 }
 
@@ -143,6 +159,10 @@ pub fn mock_for_codes(codes: &[String]) -> Vec<QuoteRow> {
                 ask1: 0.0,
                 bid1_vol: 0,
                 ask1_vol: 0,
+                volume_ratio: None,
+                sector: None,
+                sector_change_pct: None,
+                industry_board_code: None,
             });
         }
     }
@@ -311,12 +331,62 @@ fn internal_code_to_ulist_sec(code: &str) -> Option<String> {
     }
 }
 
+fn em_nonempty_string_field(obj: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
+    let v = obj.get(key)?;
+    if let Some(s) = v.as_str() {
+        let t = s.trim();
+        if t.is_empty() || t == "-" {
+            return None;
+        }
+        return Some(t.to_string());
+    }
+    if let Some(n) = v.as_i64() {
+        return (n != 0).then(|| n.to_string());
+    }
+    None
+}
+
 fn sector_from_em_f100(diff: &Value) -> Option<String> {
-    let s = diff.get("f100").and_then(|v| v.as_str()).unwrap_or("").trim();
-    if s.is_empty() || s == "-" {
+    let obj = diff.as_object()?;
+    em_nonempty_string_field(obj, "f100")
+}
+
+/// `BK` + 数字 → 映射表用小写键 `bk0482`
+fn normalize_em_bk_code(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    if t.len() < 4 {
         return None;
     }
-    Some(s.to_string())
+    let u = t.to_ascii_uppercase();
+    if !u.starts_with("BK") {
+        return None;
+    }
+    let num = &u[2..];
+    if num.is_empty() || !num.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!("bk{}", num))
+}
+
+/// 个股 `ulist`/`stock/get` 行：从常见字段里取行业板块代码
+fn em_industry_bk_from_stock_row(obj: &serde_json::Map<String, Value>) -> Option<String> {
+    for key in ["f101", "f102", "f127", "f128", "f130", "f132"] {
+        if let Some(v) = obj.get(key) {
+            if let Some(s) = v.as_str() {
+                if let Some(bk) = normalize_em_bk_code(s) {
+                    return Some(bk);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 行业 `clist` 行：`f12` 为板块代码（如 `BK0482`）
+fn em_board_code_f12_clist(obj: &serde_json::Map<String, Value>) -> Option<String> {
+    let v = obj.get("f12")?;
+    let s = v.as_str()?;
+    normalize_em_bk_code(s)
 }
 
 fn json_f64_from_value(val: &Value) -> Option<f64> {
@@ -457,8 +527,9 @@ pub fn quote_id_to_code(quote_id: &str) -> Option<String> {
 
 /// 单票快照：`f43` 最新价（与东财 App/PC 一致）；`f60` 昨收；`f17` 今开；`f19`/`f31` 买一卖一。
 /// 勿用 `f46` 作现价（与 `ulist` 的 `f2` 不同源时易与今开等字段混淆）。
+/// `f101`/`f127` 等：部分环境下带行业板块 `BK` 代码，供 `clist` 映射兜底。
 const STOCK_GET_FIELDS: &str =
-    "f17,f19,f24,f31,f36,f43,f46,f57,f58,f60,f44,f45,f47,f48,f71,f168,f169,f170,f171";
+    "f10,f17,f19,f24,f31,f36,f43,f46,f57,f58,f60,f100,f101,f127,f128,f130,f44,f45,f47,f48,f71,f168,f169,f170,f171";
 
 fn json_f64(obj: &serde_json::Map<String, Value>, key: &str) -> Option<f64> {
     obj.get(key).and_then(|v| {
@@ -511,7 +582,7 @@ fn json_code_f12(obj: &serde_json::Map<String, Value>) -> Option<String> {
 
 /// `ulist.np/get` 与 `clist.get` 单行字段一致（见 AKShare `stock_zh_a_spot_em`）：`f2` 最新价、`f3` 涨跌幅、`f18` 昨收…
 const ULIST_QUOTE_FIELDS: &str =
-    "f2,f3,f5,f6,f8,f12,f13,f14,f15,f16,f17,f18,f19,f24,f31,f36";
+    "f2,f3,f5,f6,f8,f10,f12,f13,f14,f15,f16,f17,f18,f19,f24,f31,f36,f100,f101,f127,f128,f130";
 
 /// 东财 `ulist.np` 与 `stock/get` 字段语义不一致：实测 `f31` 多为买一价，`f19` 常为非价字段（如小整数）；
 /// 当 `f19`、`f31` 均在现价附近时按 bid≤ask 与现价位置自动配对；否则以 `f31` 为主推断买一，并据现价补卖一。
@@ -670,6 +741,9 @@ fn parse_em_ulist_diff_row(internal_code_lower: &str, diff: &Value) -> Option<Qu
     let (bid1, ask1) = parse_ulist_bid_ask(price, raw19, raw31);
     let bid1_vol = json_u64(obj, "f24");
     let ask1_vol = json_u64(obj, "f36");
+    let volume_ratio = json_f64(obj, "f10").filter(|v| v.is_finite() && *v >= 0.0 && *v < 1_000_000.0);
+    let sector = em_nonempty_string_field(obj, "f100");
+    let industry_board_code = em_industry_bk_from_stock_row(obj);
     Some(QuoteRow {
         code: internal_code_lower.to_string(),
         name,
@@ -689,6 +763,10 @@ fn parse_em_ulist_diff_row(internal_code_lower: &str, diff: &Value) -> Option<Qu
         ask1,
         bid1_vol,
         ask1_vol,
+        volume_ratio,
+        sector,
+        sector_change_pct: None,
+        industry_board_code,
     })
 }
 
@@ -842,6 +920,9 @@ fn parse_em_stock_json(internal_code: &str, body: &Value) -> Result<QuoteRow, St
 
     let bid1_vol = json_u64(data, "f24");
     let ask1_vol = json_u64(data, "f36");
+    let volume_ratio = json_f64(data, "f10").filter(|v| v.is_finite() && *v >= 0.0 && *v < 1_000_000.0);
+    let sector = em_nonempty_string_field(data, "f100");
+    let industry_board_code = em_industry_bk_from_stock_row(data);
 
     Ok(QuoteRow {
         code: internal_code.trim().to_lowercase(),
@@ -862,6 +943,10 @@ fn parse_em_stock_json(internal_code: &str, body: &Value) -> Result<QuoteRow, St
         ask1,
         bid1_vol,
         ask1_vol,
+        volume_ratio,
+        sector,
+        sector_change_pct: None,
+        industry_board_code,
     })
 }
 
@@ -1034,6 +1119,10 @@ fn error_row(internal_code: &str, _msg: &str) -> QuoteRow {
         ask1: 0.0,
         bid1_vol: 0,
         ask1_vol: 0,
+        volume_ratio: None,
+        sector: None,
+        sector_change_pct: None,
+        industry_board_code: None,
     }
 }
 
@@ -1043,6 +1132,7 @@ pub async fn fetch_quotes_eastmoney(codes: &[String]) -> Result<Vec<QuoteRow>, S
         return Ok(vec![]);
     }
     let client = em_client()?;
+    let sector_map = fetch_industry_board_name_to_change(&client).await;
     let unique: Vec<String> = {
         let mut seen = std::collections::HashSet::new();
         let mut v = Vec::new();
@@ -1084,6 +1174,10 @@ pub async fn fetch_quotes_eastmoney(codes: &[String]) -> Result<Vec<QuoteRow>, S
         for r in futures::future::join_all(futs).await {
             by_code.insert(r.code.to_lowercase(), r);
         }
+    }
+
+    for r in by_code.values_mut() {
+        attach_sector_change_from_map(r, &sector_map);
     }
 
     Ok(codes
@@ -1362,7 +1456,6 @@ pub async fn get_quotes_impl(codes: Vec<String>, quote_source: &str) -> Result<V
                     return Err(e);
                 }
             };
-            println!("em_rows: {:?}", em_rows);
             let mock_rows = mock_for_codes(&codes);
             let merged: Vec<QuoteRow> = em_rows
                 .into_iter()
@@ -1843,6 +1936,10 @@ fn quote_row_from_gtimg_parts(sym_lower: &str, parts: &[&str]) -> Option<QuoteRo
         ask1,
         bid1_vol,
         ask1_vol,
+        volume_ratio: None,
+        sector: None,
+        sector_change_pct: None,
+        industry_board_code: None,
     })
 }
 
@@ -2414,6 +2511,9 @@ pub struct RibbonIndexItem {
 pub struct MarketSectorBrief {
     pub name: String,
     pub change_pct: f64,
+    /// 行业 `clist` 的 `f12`（`BKxxxx`），仅构建映射用
+    #[serde(skip)]
+    pub board_code: Option<String>,
 }
 
 /// 与 `get_market_ribbon` 前端一致
@@ -2561,10 +2661,22 @@ async fn fetch_market_breadth_up_down_stock_get(client: &reqwest::Client) -> (u3
 /// 东财行业板块 `fs`：**必须用 `+` 连接**（`urlencoding` 会编成 `%2B`）。若写成空格再编码为 `%20`，服务端会扩成数万只标的（杠杆 ETF 等），`f3` 会出现 500% 级假数据。
 const EM_INDUSTRY_BOARD_FS: &str = "m:90+t:2+f:!50";
 
+/// 东财 `clist` 多省分流域名（AKShare 等常用 `17.push2`；根域名在部分网络下 `clist` 会空数据）
+const EM_PUSH2_CLIST_HOSTS: &[&str] = &[
+    "https://17.push2.eastmoney.com",
+    "https://82.push2.eastmoney.com",
+    "https://push2.eastmoney.com",
+    "http://17.push2.eastmoney.com",
+    "http://82.push2.eastmoney.com",
+    "http://push2.eastmoney.com",
+];
+
 fn parse_industry_board_clist_diff(text: &str) -> Vec<MarketSectorBrief> {
     let Ok(v) = serde_json::from_str::<Value>(text) else {
         return vec![];
     };
+    // 东财 clist 接口有时 rc=0 但 diff 仍为空（网络/域名级问题），也可能在非 0 时仍有有效数据；
+    // 不以 rc 为唯一过滤条件，让 diff 解析说话。
     let Some(diff) = v.pointer("/data/diff").and_then(|d| d.as_array()) else {
         return vec![];
     };
@@ -2573,20 +2685,19 @@ fn parse_industry_board_clist_diff(text: &str) -> Vec<MarketSectorBrief> {
         let Some(obj) = item.as_object() else {
             continue;
         };
-        let name = obj
-            .get("f14")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        if name.is_empty() {
+        let Some(name) = em_nonempty_string_field(obj, "f14") else {
             continue;
-        }
+        };
         let change_pct = json_f64(obj, "f3").unwrap_or(0.0);
         if !change_pct.is_finite() {
             continue;
         }
-        rows.push(MarketSectorBrief { name, change_pct });
+        let board_code = em_board_code_f12_clist(obj);
+        rows.push(MarketSectorBrief {
+            name,
+            change_pct,
+            board_code,
+        });
     }
     rows
 }
@@ -2594,17 +2705,31 @@ fn parse_industry_board_clist_diff(text: &str) -> Vec<MarketSectorBrief> {
 /// 东财 `clist`：`po=1` 按 `f3` 降序（涨幅榜），`po=0` 升序（跌幅榜）。领跌不可只在 `po=1` 的一页里取最小值，否则跌幅最大者可能不在该页。
 async fn fetch_industry_board_clist_page(client: &reqwest::Client, po: u8) -> String {
     let fs = urlencoding::encode(EM_INDUSTRY_BOARD_FS);
-    let url = format!(
-        "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=50&po={}&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f3&fields=f14,f3&fs={}",
+    let qs = format!(
+        "pn=1&pz=50&po={}&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f3&fields=f14,f3&fs={}",
         po, fs
     );
-    match client.get(&url).send().await {
-        Ok(r) => match r.text().await {
-            Ok(t) => t,
-            Err(_) => String::new(),
-        },
-        Err(_) => String::new(),
+    let mut last_err = String::new();
+    for host in EM_PUSH2_CLIST_HOSTS {
+        let url = format!("{}/api/qt/clist/get?{}", host, qs);
+        let Ok(res) = client.get(&url).send().await else {
+            continue;
+        };
+        let Ok(text) = res.text().await else {
+            continue;
+        };
+        // 只要 diff 解析有结果就用（rc 非 0 情况下也可能有数据）
+        if !text.trim().is_empty() && parse_industry_board_clist_diff(&text).is_empty() {
+            // 解析为空，记录错误但不立即返回，继续试其他域名
+            last_err = text.chars().take(120).collect();
+            continue;
+        }
+        if !parse_industry_board_clist_diff(&text).is_empty() {
+            return text;
+        }
     }
+    // 所有域名都失败，返回最后一个收到的响应（可能含部分数据或错误信息）
+    last_err
 }
 
 /// 东财 `clist` 沪深行业板块，用于市场快览领涨/领跌（与网页排序一致：直接取接口顺序前 6）
@@ -2624,7 +2749,125 @@ async fn fetch_industry_sector_leaders(
     (gainers, losers)
 }
 
-/// 底部条：A 股核心宽基 + 港股 + 与 A 股联动常见外盘（东财 `100.*` 全球指数）
+fn sector_name_normalize(s: &str) -> String {
+    s.trim()
+        .replace('\u{3000}', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// 东财行业板块名常见后缀（L2 相对个股 f100 可能多「Ⅱ」等）
+fn strip_board_tier_suffix(s: &str) -> String {
+    let t = s.trim();
+    for suf in ["Ⅲ", "III", "Ⅱ", "II", "Ⅰ", "I"] {
+        if let Some(p) = t.strip_suffix(suf) {
+            return p
+                .trim_end_matches(|c: char| c == ' ' || c == '\u{3000}')
+                .to_string();
+        }
+    }
+    t.to_string()
+}
+
+fn board_rest_is_tier_suffix_only(rest: &str) -> bool {
+    let t = rest
+        .trim_matches(|c: char| c == ' ' || c == '\u{3000}')
+        .trim();
+    t.is_empty() || ["Ⅱ", "II", "Ⅲ", "III", "Ⅰ", "I"].iter().any(|s| t == *s)
+}
+
+fn attach_sector_change_from_map(row: &mut QuoteRow, map: &HashMap<String, f64>) {
+    if let Some(ref bk) = row.industry_board_code {
+        if let Some(&pct) = map.get(bk) {
+            row.sector_change_pct = Some(pct);
+            return;
+        }
+    }
+    let Some(ref sec) = row.sector else {
+        return;
+    };
+    let s = sector_name_normalize(sec);
+    if s.is_empty() {
+        return;
+    }
+    if let Some(&pct) = map.get(&s) {
+        row.sector_change_pct = Some(pct);
+        return;
+    }
+    let s_short = strip_board_tier_suffix(&s);
+    if !s_short.is_empty() && s_short != s {
+        if let Some(&pct) = map.get(&s_short) {
+            row.sector_change_pct = Some(pct);
+            return;
+        }
+    }
+    for (k, &pct) in map.iter() {
+        if k.len() >= s.len() && k.starts_with(&s) && board_rest_is_tier_suffix_only(&k[s.len()..]) {
+            row.sector_change_pct = Some(pct);
+            return;
+        }
+    }
+    for (k, &pct) in map.iter() {
+        if s.len() >= k.len() && s.starts_with(k) && board_rest_is_tier_suffix_only(&s[k.len()..]) {
+            row.sector_change_pct = Some(pct);
+            return;
+        }
+    }
+}
+
+/// 沪深行业板块 `clist` 全量分页 → 板块名 / `BK` 代码 → 当日涨跌幅（%）
+async fn fetch_industry_board_name_to_change(client: &reqwest::Client) -> HashMap<String, f64> {
+    const CLIST_PZ: u32 = 200;
+    let fs = urlencoding::encode(EM_INDUSTRY_BOARD_FS);
+    for host in EM_PUSH2_CLIST_HOSTS {
+        let mut map: HashMap<String, f64> = HashMap::new();
+        let mut got_page = false;
+        for pn in 1u32..=30u32 {
+            let url = format!(
+                "{}/api/qt/clist/get?pn={}&pz={}&po=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f3&fields=f12,f14,f3&fs={}",
+                host, pn, CLIST_PZ, fs
+            );
+            let Ok(res) = client.get(&url).send().await else {
+                break;
+            };
+            let Ok(text) = res.text().await else {
+                break;
+            };
+            let rows = parse_industry_board_clist_diff(&text);
+            if rows.is_empty() {
+                if pn == 1 && !got_page {
+                    break;
+                }
+                break;
+            }
+            got_page = true;
+            let page_n = rows.len();
+            for r in rows {
+                let k = sector_name_normalize(&r.name);
+                if !k.is_empty() {
+                    map.insert(k.clone(), r.change_pct);
+                    let short = strip_board_tier_suffix(&k);
+                    if !short.is_empty() && short != k {
+                        map.entry(short).or_insert(r.change_pct);
+                    }
+                }
+                if let Some(ref bk) = r.board_code {
+                    map.insert(bk.clone(), r.change_pct);
+                }
+            }
+            if page_n < CLIST_PZ as usize {
+                break;
+            }
+        }
+        if !map.is_empty() {
+            return map;
+        }
+    }
+    HashMap::new()
+}
+
+/// 底部条：A 股核心宽基 + 港股（超短操盘手最需要盯的 7 个）
 const RIBBON_MAJOR_INDICES: &[(&str, &str)] = &[
     ("sh000001", "上证"),
     ("sz399001", "深证"),
@@ -2633,89 +2876,26 @@ const RIBBON_MAJOR_INDICES: &[(&str, &str)] = &[
     ("sh000688", "科创50"),
     ("hkhsi", "恒生"),
     ("fsa50", "富时A50"),
-    ("ndx", "纳斯达克"),
 ];
 
-/// 按 `secid` 拉一条全球/离岸指数（`stock/get`，与恒生路径一致）
-async fn fetch_ribbon_by_secid(
-    client: &reqwest::Client,
-    id: &str,
-    label: &str,
-    secid: &str,
-) -> Option<RibbonIndexItem> {
-    let url = format!(
-        "https://push2.eastmoney.com/api/qt/ulist.np/get?ut=f057cbcbce2a86e2866ab8877db1d059&fltt=2&invt=2&fields=f2,f3&secids={}",
-        urlencoding::encode(secid)
-    );
-    let text = client.get(&url).send().await.ok()?.text().await.ok()?;
-    let v: Value = serde_json::from_str(&text).ok()?;
-    let diff = v.pointer("/data/diff").and_then(|d| d.as_array())?;
-    let obj = diff.first()?.as_object()?;
-    let price = json_f64(obj, "f2").unwrap_or(0.0);
-    let change_pct = json_f64(obj, "f3").unwrap_or(0.0);
-    if price <= 1e-9 && change_pct.abs() < 1e-6 {
-        return None;
-    }
-    Some(RibbonIndexItem {
-        id: id.to_string(),
-        name: label.to_string(),
-        change_pct,
-    })
-}
-
-async fn fetch_first_ribbon_secid(
-    client: &reqwest::Client,
-    id: &str,
-    label: &str,
-    secids: &[&str],
-) -> Option<RibbonIndexItem> {
-    for s in secids {
-        if let Some(it) = fetch_ribbon_by_secid(client, id, label, s).await {
-            return Some(it);
-        }
-    }
-    None
-}
-
 async fn fetch_ribbon_major_indices(client: &reqwest::Client) -> Vec<RibbonIndexItem> {
-    // 港股/全球指数勿进 ulist 批量：易拖垮整批或 `f2` 解析与 A 股不一致
-    let codes_ulist: Vec<String> = RIBBON_MAJOR_INDICES
+    // 全部走 ulist 批量（A 股 + 港股均可）
+    let codes: Vec<String> = RIBBON_MAJOR_INDICES
         .iter()
-        .filter(|(c, _)| {
-            let k = c.to_lowercase();
-            k != "hkhsi" && k != "fsa50" && k != "ndx"
-        })
         .map(|(c, _)| (*c).to_string())
         .collect();
 
-    let overseas_codes = vec!["fsa50".into(), "ndx".into(), "hkhsi".into()];
-    let (map_res, overseas_res, n225, glob_cl, glob_jm, glob_zc, dji) = futures::join!(
-        fetch_quotes_eastmoney_ulist(client, &codes_ulist),
-        fetch_quotes_eastmoney_ulist(client, &overseas_codes),
-        fetch_first_ribbon_secid(client, "glob_n225", "日经225", &["100.NKY", "100.N225"]),
-        fetch_first_ribbon_secid(
-            client,
-            "glob_cl",
-            "美原油",
-            &["102.CL00Y", "103.CL00Y", "104.CL00Y", "152.CL00Y"],
-        ),
-        fetch_first_ribbon_secid(client, "glob_jm", "焦煤", &["114.jm888", "114.jm9999", "114.JM888"]),
-        fetch_first_ribbon_secid(client, "glob_zc", "动力煤", &["220.zc888", "179.zc888", "114.zc888"]),
-        fetch_first_ribbon_secid(client, "glob_dji", "道指", &["100.DJIA", "100.DJI"]),
-    );
+    let map = fetch_quotes_eastmoney_ulist(client, &codes)
+        .await
+        .unwrap_or_default();
 
-    let map = map_res.unwrap_or_default();
-    let overseas_map = overseas_res.unwrap_or_default();
-
-    let mut out = Vec::with_capacity(RIBBON_MAJOR_INDICES.len() + 6);
-    // 顺序：上证、深证 → 日经225（地缘/外盘风向标）→ A 股宽基 → 原油、焦煤 → 恒生/A50/纳指 → 道指
-    for (code, label) in [
-        ("sh000001", "上证"),
-        ("sz399001", "深证"),
-    ] {
+    let mut out = Vec::with_capacity(RIBBON_MAJOR_INDICES.len());
+    for (code, label) in RIBBON_MAJOR_INDICES.iter().copied() {
         let k = code.to_lowercase();
         let change_pct = if let Some(q) = map.get(&k) {
             q.change_pct
+        } else if k == "hkhsi" {
+            fetch_hk_hsi_em(client).await.change_pct
         } else {
             fetch_one_em(client, code).await.change_pct
         };
@@ -2724,63 +2904,6 @@ async fn fetch_ribbon_major_indices(client: &reqwest::Client) -> Vec<RibbonIndex
             name: label.to_string(),
             change_pct,
         });
-    }
-    if let Some(it) = n225 {
-        out.push(it);
-    }
-    for (code, label) in [
-        ("sh000300", "沪深300"),
-        ("sz399006", "创业板"),
-        ("sh000688", "科创50"),
-    ] {
-        let k = code.to_lowercase();
-        let change_pct = if let Some(q) = map.get(&k) {
-            q.change_pct
-        } else {
-            fetch_one_em(client, code).await.change_pct
-        };
-        out.push(RibbonIndexItem {
-            id: k,
-            name: label.to_string(),
-            change_pct,
-        });
-    }
-    if let Some(it) = glob_cl {
-        out.push(it);
-    }
-    if let Some(it) = glob_jm {
-        out.push(it);
-    }
-    if let Some(it) = glob_zc {
-        out.push(it);
-    }
-
-    for (code, label) in [
-        ("hkhsi", "恒生"),
-        ("fsa50", "富时A50"),
-        ("ndx", "纳斯达克"),
-    ] {
-        let k = code.to_lowercase();
-        let change_pct = if k == "hkhsi" {
-            if let Some(q) = overseas_map.get("hkhsi") {
-                q.change_pct
-            } else {
-                fetch_hk_hsi_em(client).await.change_pct
-            }
-        } else if let Some(q) = overseas_map.get(&k) {
-            q.change_pct
-        } else {
-            fetch_one_em(client, code).await.change_pct
-        };
-        out.push(RibbonIndexItem {
-            id: k,
-            name: label.to_string(),
-            change_pct,
-        });
-    }
-
-    if let Some(it) = dji {
-        out.push(it);
     }
     out
 }
@@ -2799,11 +2922,6 @@ fn mock_market_ribbon() -> MarketRibbonSnapshot {
                 change_pct: 0.52,
             },
             RibbonIndexItem {
-                id: "glob_n225".into(),
-                name: "日经225".into(),
-                change_pct: -0.67,
-            },
-            RibbonIndexItem {
                 id: "sh000300".into(),
                 name: "沪深300".into(),
                 change_pct: 0.28,
@@ -2819,21 +2937,6 @@ fn mock_market_ribbon() -> MarketRibbonSnapshot {
                 change_pct: -0.82,
             },
             RibbonIndexItem {
-                id: "glob_cl".into(),
-                name: "美原油".into(),
-                change_pct: 0.15,
-            },
-            RibbonIndexItem {
-                id: "glob_jm".into(),
-                name: "焦煤".into(),
-                change_pct: -0.42,
-            },
-            RibbonIndexItem {
-                id: "glob_zc".into(),
-                name: "动力煤".into(),
-                change_pct: -0.31,
-            },
-            RibbonIndexItem {
                 id: "hkhsi".into(),
                 name: "恒生".into(),
                 change_pct: -0.21,
@@ -2842,16 +2945,6 @@ fn mock_market_ribbon() -> MarketRibbonSnapshot {
                 id: "fsa50".into(),
                 name: "富时A50".into(),
                 change_pct: 0.41,
-            },
-            RibbonIndexItem {
-                id: "ndx".into(),
-                name: "纳斯达克".into(),
-                change_pct: 0.18,
-            },
-            RibbonIndexItem {
-                id: "glob_dji".into(),
-                name: "道指".into(),
-                change_pct: 0.09,
             },
         ],
         up_count: 2650,
@@ -2862,28 +2955,34 @@ fn mock_market_ribbon() -> MarketRibbonSnapshot {
             MarketSectorBrief {
                 name: "光伏设备".into(),
                 change_pct: 2.35,
+                board_code: None,
             },
             MarketSectorBrief {
                 name: "半导体".into(),
                 change_pct: 1.82,
+                board_code: None,
             },
             MarketSectorBrief {
                 name: "通信设备".into(),
                 change_pct: 1.41,
+                board_code: None,
             },
         ],
         sector_losers: vec![
             MarketSectorBrief {
                 name: "房地产".into(),
                 change_pct: -1.92,
+                board_code: None,
             },
             MarketSectorBrief {
                 name: "煤炭".into(),
                 change_pct: -1.05,
+                board_code: None,
             },
             MarketSectorBrief {
                 name: "银行".into(),
                 change_pct: -0.38,
+                board_code: None,
             },
         ],
     }

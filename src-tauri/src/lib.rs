@@ -79,7 +79,7 @@ fn migrate_watch_groups(settings: &mut AppSettings) {
 }
 
 fn migrate_visible_columns(settings: &mut AppSettings) {
-    // 如果用户保存的依然是旧的默认列，则自动升级为新的紧凑短线默认列
+    // 旧版两档默认 → 先统一到「换手+量+额」，再由下一段迁移到短线三列
     let old_default_1 = vec!["name", "changePct", "price", "prevClose", "open"];
     let old_default_2 = vec!["name", "price", "changePct", "prevClose", "open"];
     if settings.visible_columns == old_default_1 || settings.visible_columns == old_default_2 {
@@ -90,6 +90,44 @@ fn migrate_visible_columns(settings: &mut AppSettings) {
             "turnoverRate".into(),
             "volume".into(),
             "turnover".into(),
+        ];
+    }
+    // 仍为「换手 / 成交量 / 成交额」默认组合时，升级为量比 + 板块 + 板块涨幅
+    let old_liquidity = vec![
+        "name",
+        "price",
+        "changePct",
+        "turnoverRate",
+        "volume",
+        "turnover",
+    ];
+    if settings.visible_columns == old_liquidity {
+        settings.visible_columns = vec![
+            "name".into(),
+            "price".into(),
+            "changePct".into(),
+            "volumeRatio".into(),
+            "sectorBlock".into(),
+            "sectorPct".into(),
+        ];
+    }
+    // 早期短线默认第三列为「个股振幅」，升级为「板块涨幅」
+    let old_short_amp = vec![
+        "name",
+        "price",
+        "changePct",
+        "volumeRatio",
+        "sectorBlock",
+        "amplitude",
+    ];
+    if settings.visible_columns == old_short_amp {
+        settings.visible_columns = vec![
+            "name".into(),
+            "price".into(),
+            "changePct".into(),
+            "volumeRatio".into(),
+            "sectorBlock".into(),
+            "sectorPct".into(),
         ];
     }
 }
@@ -114,9 +152,9 @@ impl Default for AppSettings {
                 "name".into(),
                 "price".into(),
                 "changePct".into(),
-                "turnoverRate".into(),
-                "volume".into(),
-                "turnover".into(),
+                "volumeRatio".into(),
+                "sectorBlock".into(),
+                "sectorPct".into(),
             ],
             panel_mode: "normal".into(),
             auto_hide_edge: true,

@@ -64,6 +64,12 @@ export type QuoteRow = {
   bid1Vol?: number;
   /** 卖一量（手） */
   ask1Vol?: number;
+  /** 量比（东财 f10） */
+  volumeRatio?: number | null;
+  /** 行业板块名（东财 f100） */
+  sector?: string | null;
+  /** 对应行业板块当日涨跌幅 % */
+  sectorChangePct?: number | null;
 };
 
 export type ColumnDef = { id: string; label: string };
@@ -72,6 +78,10 @@ export const COLUMN_DEFS: ColumnDef[] = [
     { id: "name", label: "股票名" },
     { id: "price", label: "现价" },
     { id: "changePct", label: "涨跌幅" },
+    { id: "volumeRatio", label: "量比" },
+    { id: "sectorBlock", label: "板块" },
+    { id: "sectorPct", label: "板块涨幅" },
+    { id: "amplitude", label: "振幅" },
     { id: "turnoverRate", label: "换手率" },
     { id: "volume", label: "成交量" },
     { id: "turnover", label: "成交额" },

@@ -188,20 +188,20 @@ const themeColors = computed(() => {
       <defs>
         <!-- 3D 身体材质：黑曜石/亮黑球体渐变 -->
         <radialGradient :id="`body-grad-${svgUid}`" cx="35%" cy="35%" r="65%">
-          <stop offset="0%" stop-color="#555555" />
-          <stop offset="15%" stop-color="#222222" />
-          <stop offset="50%" stop-color="#050505" />
-          <stop offset="85%" stop-color="#000000" />
-          <stop offset="100%" stop-color="#111111" />
+          <stop offset="0%" stop-color="#b3e5fc" />
+          <stop offset="20%" stop-color="#4fc3f7" />
+          <stop offset="55%" stop-color="#0288d1" />
+          <stop offset="80%" stop-color="#01579b" />
+          <stop offset="100%" stop-color="#0d2137" />
         </radialGradient>
 
-        <!-- 3D 尾巴材质：液态金属/银白渐变 -->
+        <!-- 水晶尾巴材质：通透渐变 -->
         <linearGradient :id="`tail-grad-${svgUid}`" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stop-color="#111111" />
-          <stop offset="30%" stop-color="#333333" />
-          <stop offset="60%" stop-color="#eeeeee" />
-          <stop offset="80%" stop-color="#ffffff" />
-          <stop offset="100%" stop-color="#aaaaaa" />
+          <stop offset="0%" stop-color="#81d4fa" />
+          <stop offset="35%" stop-color="#4fc3f7" />
+          <stop offset="65%" stop-color="#29b6f6" />
+          <stop offset="85%" stop-color="#0277bd" />
+          <stop offset="100%" stop-color="#01579b" />
         </linearGradient>
 
         <!-- 霓虹发光滤镜 -->
@@ -224,25 +224,29 @@ const themeColors = computed(() => {
           :fill="`url(#tail-grad-${svgUid})`"
         />
 
-        <!-- 身体 (黑曜石质感，水滴状，3/4 透视) -->
+        <!-- 身体 (水晶通透质感，水滴状，3/4 透视) -->
         <path
           class="elf-body"
           d="M 45 92 C 10 92, 5 55, 22 32 C 35 12, 65 15, 75 40 C 85 65, 75 92, 45 92 Z"
           :fill="`url(#body-grad-${svgUid})`"
+          fill-opacity="0.88"
+          stroke="#4fc3f7"
+          stroke-width="0.8"
+          stroke-opacity="0.5"
         />
 
-        <!-- 身体高光 (左上角强反光) -->
+        <!-- 身体高光 (左上角强反光，更亮更通透) -->
         <path
           class="elf-highlight"
           d="M 25 40 C 35 25, 55 25, 60 35 C 55 30, 40 28, 30 42 C 28 45, 24 43, 25 40 Z"
-          fill="#ffffff"
-          opacity="0.25"
+          fill="#e3f2fd"
+          opacity="0.65"
           filter="blur(1px)"
         />
 
-        <!-- 侧鳍/小脚 (3/4 透视，左远右近) -->
-        <ellipse class="elf-fin elf-fin--l" cx="22" cy="78" rx="3.5" ry="6" fill="#050505" transform="rotate(-30 22 78)" />
-        <ellipse class="elf-fin elf-fin--r" cx="58" cy="86" rx="4.5" ry="8" fill="#050505" transform="rotate(-15 58 86)" />
+        <!-- 侧鳍/小脚 (水晶质感，3/4 透视，左远右近) -->
+        <ellipse class="elf-fin elf-fin--l" cx="22" cy="78" rx="3.5" ry="6" :fill="`url(#tail-grad-${svgUid})`" transform="rotate(-30 22 78)" />
+        <ellipse class="elf-fin elf-fin--r" cx="58" cy="86" rx="4.5" ry="8" :fill="`url(#tail-grad-${svgUid})`" transform="rotate(-15 58 86)" />
 
         <!-- 五官 (红光/主题色发光) -->
         <g class="elf-face" :filter="`url(#neon-glow-${svgUid})`">

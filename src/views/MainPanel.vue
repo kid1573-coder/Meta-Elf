@@ -8,7 +8,7 @@ import { useEdgeHide } from "../composables/useEdgeHide";
 import { DEFAULT_QUOTE_CODES } from "../constants/quote";
 import { LAST_WATCH_GROUP_KEY } from "../constants/watchGroup";
 import { COLUMN_DEFS, type QuoteRow, type WatchGroup } from "../types/app";
-import { changeClass, fmtFixed, fmtVolume } from "../utils/format";
+import { changeClass, fmtFixed, fmtVolume, truncateUnicodeChars } from "../utils/format";
 import { displayStockName } from "../utils/stockDisplay";
 import BrandElfMascot from "../components/BrandElfMascot.vue";
 import MarketRibbon from "../components/MarketRibbon.vue";
@@ -146,7 +146,10 @@ const visibleCols = computed(() => {
     return COLUMN_DEFS.filter((c) => c.id === "name");
   }
   const s = settings.value;
-  if (!s) return COLUMN_DEFS.filter((c) => ["name", "price", "changePct", "turnoverRate", "volume", "turnover"].includes(c.id));
+  if (!s)
+    return COLUMN_DEFS.filter((c) =>
+      ["name", "price", "changePct", "volumeRatio", "sectorBlock", "sectorPct"].includes(c.id),
+    );
   const set = new Set(s.visibleColumns);
   // 保持 COLUMN_DEFS 中定义的顺序
   return COLUMN_DEFS.filter((c) => set.has(c.id));
@@ -221,12 +224,36 @@ function displayName(row: QuoteRow): string {
   return displayStockName(row, settings.value);
 }
 
+const SECTOR_LABEL_MAX_CHARS = 4;
+
+function sectorBlockCellText(row: QuoteRow): string {
+  const n = row.sector?.trim() ?? "";
+  if (!n) return "—";
+  return truncateUnicodeChars(n, SECTOR_LABEL_MAX_CHARS);
+}
+
 function cell(row: QuoteRow, colId: string): string {
   switch (colId) {
     case "name":
       return displayName(row);
     case "changePct":
       return `${fmtFixed(row.changePct, 2)}%`;
+    case "volumeRatio":
+      return row.volumeRatio != null && Number.isFinite(row.volumeRatio)
+        ? fmtFixed(row.volumeRatio, 2)
+        : "—";
+    case "sectorBlock":
+      return sectorBlockCellText(row);
+    case "sectorPct": {
+      const p = row.sectorChangePct;
+      if (p == null || !Number.isFinite(p)) return "—";
+      return `${p >= 0 ? "+" : ""}${fmtFixed(p, 2)}%`;
+    }
+    case "amplitude": {
+      if (row.prevClose <= 0 || !Number.isFinite(row.prevClose)) return "—";
+      const amp = ((row.high - row.low) / row.prevClose) * 100;
+      return Number.isFinite(amp) ? `${fmtFixed(amp, 2)}%` : "—";
+    }
     case "price":
       return fmtFixed(row.price, 2);
     case "prevClose":
@@ -261,6 +288,10 @@ function cell(row: QuoteRow, colId: string): string {
 function pctForRow(row: QuoteRow, colId: string): number | null {
   if (colId === "changePct") return row.changePct;
   if (colId === "dailyPl") return row.dailyPl;
+  if (colId === "sectorPct") {
+    const p = row.sectorChangePct;
+    return p != null && Number.isFinite(p) ? p : null;
+  }
   return null;
 }
 
@@ -833,7 +864,12 @@ async function ctxMoveDown() {
                         }"
                       >
                         <span
-                          v-if="pctForRow(r, c.id) !== null"
+                          v-if="c.id === 'sectorBlock'"
+                          class="sector-block-cell sector-block-cell--w4 num"
+                          :title="r.sector?.trim() ? r.sector.trim() : undefined"
+                        >{{ sectorBlockCellText(r) }}</span>
+                        <span
+                          v-else-if="pctForRow(r, c.id) !== null"
                           :class="changeClass(pctForRow(r, c.id)!, settings?.colorScheme ?? 'redUp')"
                         >
                           {{ cell(r, c.id) }}
@@ -986,6 +1022,28 @@ async function ctxMoveDown() {
   min-height: 0;
   position: relative;
   --detail-rail-width: min(72vw, 820px);
+}
+
+/* 板块列：固定约 4 个中文字宽，与「涨幅」列对齐整齐 */
+.sector-block-cell {
+  display: inline-block;
+  vertical-align: bottom;
+}
+
+.sector-block-cell--w4 {
+  width: 4em;
+  min-width: 4em;
+  max-width: 4em;
+  overflow: hidden;
+  text-overflow: clip;
+  white-space: nowrap;
+  text-align: left;
+  color: color-mix(in srgb, var(--yj-text-muted, #888) 82%, var(--yj-text, #e5e5e5));
+  font-variant-numeric: tabular-nums;
+}
+
+.sector-block-cell--w4[title]:not([title=""]) {
+  cursor: default;
 }
 
 /* 小窗极简：打开详情时让侧栏占满主区宽度，列表被挤没，避免窄缝里看图 */

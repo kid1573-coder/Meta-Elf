@@ -30,7 +30,14 @@ export function useQuotes(
         rows.value = newRows.map(newRow => {
           if (Math.abs(newRow.price) < 1e-9 && Math.abs(newRow.prevClose) < 1e-9 && newRow.volume === 0) {
             const oldRow = rows.value.find(r => r.code === newRow.code);
-            if (oldRow) return oldRow;
+            if (oldRow) {
+              return {
+                ...oldRow,
+                sector: newRow.sector ?? oldRow.sector,
+                sectorChangePct: newRow.sectorChangePct ?? oldRow.sectorChangePct,
+                volumeRatio: newRow.volumeRatio ?? oldRow.volumeRatio,
+              };
+            }
           }
           return newRow;
         });
