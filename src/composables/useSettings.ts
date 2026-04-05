@@ -58,7 +58,6 @@ export function useSettings() {
     if (!s) return {};
     return {
       fontSize: `${s.fontSizePx}px`,
-      opacity: String(s.opacity),
       "--yj-window-opacity": String(s.opacity),
     } as Record<string, string>;
   });

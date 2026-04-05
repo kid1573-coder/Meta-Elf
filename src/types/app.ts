@@ -27,6 +27,8 @@ export type AppSettings = {
   watchGroups: WatchGroup[];
   /** 行情源：东财列表、`tencent` 腾讯行情（买一卖一/五档与常见 App 一致）、`mock` 本地模拟 */
   quoteSource: "eastmoney" | "tencent" | "mock";
+  /** HTTP 代理地址，如 `http://127.0.0.1:7890`，留空则直连 */
+  proxyUrl: string;
 };
 
 export type SuggestItem = {

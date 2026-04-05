@@ -37,6 +37,8 @@ pub struct AppSettings {
     pub watch_groups: Vec<WatchGroup>,
     #[serde(default = "default_quote_source")]
     pub quote_source: String,
+    #[serde(default)]
+    pub proxy_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,6 +173,7 @@ impl Default for AppSettings {
                 codes,
             }],
             quote_source: default_quote_source(),
+            proxy_url: String::new(),
         }
     }
 }
@@ -200,6 +203,8 @@ fn load_settings_inner() -> Result<AppSettings, String> {
     let mut s: AppSettings = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
     migrate_watch_groups(&mut s);
     migrate_visible_columns(&mut s);
+    // 应用代理设置
+    quotes::set_proxy(&s.proxy_url);
     Ok(s)
 }
 
@@ -214,6 +219,8 @@ fn save_settings(settings: AppSettings) -> Result<AppSettings, String> {
     let path = settings_path()?;
     let json = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
     fs::write(&path, json).map_err(|e| e.to_string())?;
+    // 应用代理设置
+    quotes::set_proxy(&settings.proxy_url);
     Ok(settings)
 }
 
@@ -271,6 +278,12 @@ async fn get_market_moves(quote_source: String) -> Result<Vec<quotes::MarketMove
 #[tauri::command]
 async fn get_market_ribbon(quote_source: String) -> Result<quotes::MarketRibbonSnapshot, String> {
     quotes::get_market_ribbon_impl(&quote_source).await
+}
+
+/// 设置代理服务器
+#[tauri::command]
+fn set_proxy(proxy_url: String) {
+    quotes::set_proxy(&proxy_url);
 }
 
 fn apply_window_prefs_internal(
@@ -381,7 +394,8 @@ pub fn run() {
             get_market_ribbon,
             apply_window_prefs,
             minimize_main_window,
-            update_boss_shortcut
+            update_boss_shortcut,
+            set_proxy
         ])
         .on_window_event(|window, event| {
             #[cfg(target_os = "windows")]

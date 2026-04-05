@@ -239,6 +239,19 @@ watch(
           </div>
         </section>
 
+        <section>
+          <h2>网络代理</h2>
+          <p class="sub">如果无法获取行情数据（网络受限），可以配置代理服务器。留空则直连。</p>
+          <div class="row proxy">
+            <input
+              v-model="settings.proxyUrl"
+              class="yj-field-control proxy-input"
+              placeholder="http://127.0.0.1:7890"
+            />
+          </div>
+          <p class="sub">例如：Clash Verge 常用 http://127.0.0.1:7890，V2Ray 常用 http://127.0.0.1:10809</p>
+        </section>
+
         <footer class="actions">
           <button type="button" class="btn primary" @click="persist">保存设置</button>
         </footer>
@@ -426,6 +439,13 @@ section h2 {
 
 .boss {
   margin-top: 8px;
+}
+
+.proxy-input {
+  flex: 1;
+  min-width: 200px;
+  font-family: "DM Sans", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
 }
 
 .actions {

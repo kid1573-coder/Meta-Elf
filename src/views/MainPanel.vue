@@ -706,7 +706,6 @@ async function ctxMoveDown() {
           :theme="brandTheme"
           :ariaLabel="brandMood.ariaLabel"
         />
-        <span class="name">元精灵</span>
       </div>
       <div class="tabs" data-tauri-drag-region>
         <button
@@ -1038,7 +1037,7 @@ async function ctxMoveDown() {
   text-overflow: clip;
   white-space: nowrap;
   text-align: left;
-  color: color-mix(in srgb, var(--yj-text-muted, #888) 82%, var(--yj-text, #e5e5e5));
+  color: var(--yj-text);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1251,7 +1250,6 @@ async function ctxMoveDown() {
 
 .name {
   font-size: 0.92em;
-  opacity: 0.95;
 }
 
 .tabs {
@@ -1427,6 +1425,7 @@ async function ctxMoveDown() {
   text-align: left;
   white-space: nowrap;
   border-bottom: 1px solid var(--yj-row-border);
+  color: var(--yj-text);
 }
 
 .grid th {

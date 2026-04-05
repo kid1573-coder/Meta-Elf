@@ -264,6 +264,7 @@ function marketAbbr(code: string) {
   if (c.startsWith("sh")) return "沪";
   if (c.startsWith("sz")) return "深";
   if (c.startsWith("bj")) return "北";
+  if (c.startsWith("hk")) return "港";
   return "";
 }
 
@@ -272,6 +273,7 @@ function mktTagClass(code: string) {
   if (c.startsWith("sh")) return "mkt-tag--sh";
   if (c.startsWith("sz")) return "mkt-tag--sz";
   if (c.startsWith("bj")) return "mkt-tag--bj";
+  if (c.startsWith("hk")) return "mkt-tag--hk";
   return "mkt-tag--na";
 }
 
@@ -910,6 +912,11 @@ async function toggleGroupMembership(item: SuggestItem) {
 .mkt-tag--bj {
   background: rgba(167, 139, 250, 0.26);
   color: #ddd6fe;
+}
+
+.mkt-tag--hk {
+  background: rgba(52, 211, 153, 0.22);
+  color: #6ee7b7;
 }
 
 .mkt-tag--na {

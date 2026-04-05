@@ -1,8 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, useId, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import type { BrandMoodBucket } from "../utils/brandKaomoji";
-
-const svgUid = useId().replace(/[^a-zA-Z0-9_-]/g, "") || "meta-elf";
 
 const props = defineProps<{
   bucket: BrandMoodBucket;
@@ -22,26 +20,15 @@ function scheduleNextBlink() {
       blink.value = false;
       scheduleNextBlink();
     }, 120);
-  }, 2500 + Math.floor(Math.random() * 2500));
+  }, 2500 + Math.floor(Math.random() * 2000));
 }
 
-watch(
-  () => props.bucket,
-  () => {
-    blink.value = false;
-  }
-);
-
-onMounted(() => {
-  scheduleNextBlink();
-});
-
+watch(() => props.bucket, () => { blink.value = false; });
+onMounted(scheduleNextBlink);
 onUnmounted(() => {
-  if (blinkScheduleId !== undefined) window.clearTimeout(blinkScheduleId);
-  if (blinkShutId !== undefined) window.clearTimeout(blinkShutId);
+  if (blinkScheduleId) window.clearTimeout(blinkScheduleId);
+  if (blinkShutId) window.clearTimeout(blinkShutId);
 });
-
-const phaseDelay = computed(() => `${(props.variant % 10) * 0.07}s`);
 
 const isUpMood = computed(() => props.bucket.toLowerCase().includes("up"));
 const isDownMood = computed(() => props.bucket.toLowerCase().includes("down"));
@@ -49,320 +36,332 @@ const isWaiting = computed(() => props.bucket === "waiting" || props.bucket === 
 const isStrongUp = computed(() => props.bucket === "strongUp" || props.bucket === "strongUpAll");
 const isStrongDown = computed(() => props.bucket === "strongDown" || props.bucket === "strongDownAll");
 
-// 眼睛路径 (3/4 透视：左眼小且靠左，右眼大且靠中)
-const eyePaths = computed(() => {
-  if (blink.value && !isStrongUp.value && !isStrongDown.value) {
-    return {
-      l: "M 17 56 L 23 56",
-      r: "M 38 58 L 46 58"
-    };
-  }
-  
-  const b = props.bucket;
-  if (b === "strongUpAll") {
-    // 震惊/意外：圆睁空心眼 O O (极速拉升)
-    return {
-      l: "M 17 56 A 3 3 0 1 0 23 56 A 3 3 0 1 0 17 56",
-      r: "M 38 58 A 4 4 0 1 0 46 58 A 4 4 0 1 0 38 58"
-    };
-  }
-  if (b === "strongDownAll") {
-    // 震惊/意外：圆睁空心眼 O O (极速跳水)
-    return {
-      l: "M 17 56 A 3 3 0 1 0 23 56 A 3 3 0 1 0 17 56",
-      r: "M 38 58 A 4 4 0 1 0 46 58 A 4 4 0 1 0 38 58"
-    };
-  }
-  if (b === "strongUp") {
-    // 极度开心弯弯眼 ^ ^
-    return {
-      l: "M 17 57 Q 20 52 23 57",
-      r: "M 38 59 Q 42 53 46 59"
-    };
-  }
-  if (b === "mildUp" || b === "microUp") {
-    // 微笑眼
-    return {
-      l: "M 18 56 Q 20.5 53 23 56",
-      r: "M 39 58 Q 42.5 54 46 58"
-    };
-  }
-  if (b === "strongDown") {
-    // 痛苦紧闭眼 > <
-    return {
-      l: "M 18 53 L 22 56 L 18 59",
-      r: "M 46 55 L 40 58 L 46 61"
-    };
-  }
-  if (b === "mildDown" || b === "microDown") {
-    // 委屈眼
-    return {
-      l: "M 18 55 Q 20.5 58 23 55",
-      r: "M 39 57 Q 42.5 60 46 57"
-    };
-  }
-  if (b === "flat") {
-    // 坚定/发力 \ /
-    return {
-      l: "M 18 54 L 22 58",
-      r: "M 46 56 L 40 60"
-    };
-  }
-  if (isWaiting.value) {
-    // 发呆/等待时的平淡眼 - -
-    return {
-      l: "M 18 56 L 22 56",
-      r: "M 40 58 L 44 58"
-    };
-  }
-  // 默认圆眼 (使用小圆点模拟 3D 眼睛)
+// GBA风格调色板 - 鲜艳活泼
+const colors = computed(() => {
+  const isDark = props.theme === "dark";
   return {
-    l: "M 20 56 L 20.1 56",
-    r: "M 42 58 L 42.1 58"
+    main: isDark ? "#ff6b6b" : "#e84545",
+    light: isDark ? "#ff8787" : "#ff6b6b",
+    highlight: isDark ? "#ffa8a8" : "#ff8787",
+    dark: isDark ? "#c0392b" : "#b71c1c",
+    shadow: isDark ? "#7f1d1d" : "#5c0a0a",
+    white: "#ffffff",
+    black: "#1a1a2e",
+    cheek: "#ffb3b3",
+    tear: "#87ceeb",
   };
 });
 
-// 嘴巴路径 (3/4 透视)
-const mouthPath = computed(() => {
-  const b = props.bucket;
-  if (b === "strongUpAll" || b === "strongDownAll") {
-    // 小圆嘴 (震惊)
-    return "M 29 65 A 2 2 0 1 0 33 65 A 2 2 0 1 0 29 65";
-  }
-  if (b === "strongUp") {
-    // 大笑张开的嘴巴
-    return "M 26 63 Q 30 69 35 64";
-  }
-  if (b === "mildUp" || b === "microUp") {
-    // 微笑
-    return "M 27 64 Q 30 67 34 64";
-  }
-  if (b === "strongDown") {
-    // 委屈波浪
-    return "M 26 66 Q 28 63 30 66 T 35 66";
-  }
-  if (b === "mildDown" || b === "microDown") {
-    // 撇嘴
-    return "M 27 66 Q 30 63 34 66";
-  }
-  if (b === "flat") {
-    // 坚定紧闭
-    return "M 28 65 L 33 65";
-  }
-  if (isWaiting.value) {
-    // 平直嘴
-    return "M 28 65 L 33 65";
-  }
-  // 默认
-  return "M 28 65 L 33 65";
+// 20x18 像素螃蟹精灵 - 更大更可爱
+const P = 1.5;
+
+// 像素类型
+type Pixel = [number, number, string];
+
+// 身体主体 (更圆润)
+const bodyPixels = computed((): Pixel[] => {
+  const c = colors.value;
+  return [
+    // 壳顶高光 - 更亮
+    [8, 0, c.highlight], [9, 0, c.highlight], [10, 0, c.highlight],
+    [7, 1, c.light], [8, 1, c.white], [9, 1, c.white], [10, 1, c.white], [11, 1, c.light],
+    // 壳主体 - 更饱满
+    [5, 2, c.main], [6, 2, c.light], [7, 2, c.light], [8, 2, c.highlight], [9, 2, c.highlight], [10, 2, c.highlight], [11, 2, c.light], [12, 2, c.light], [13, 2, c.main],
+    [4, 3, c.dark], [5, 3, c.main], [6, 3, c.main], [7, 3, c.light], [8, 3, c.light], [9, 3, c.light], [10, 3, c.light], [11, 3, c.light], [12, 3, c.main], [13, 3, c.main], [14, 3, c.dark],
+    [3, 4, c.dark], [4, 4, c.main], [5, 4, c.main], [6, 4, c.main], [7, 4, c.main], [8, 4, c.main], [9, 4, c.main], [10, 4, c.main], [11, 4, c.main], [12, 4, c.main], [13, 4, c.main], [14, 4, c.dark],
+    [3, 5, c.shadow], [4, 5, c.dark], [5, 5, c.main], [6, 5, c.main], [7, 5, c.main], [8, 5, c.main], [9, 5, c.main], [10, 5, c.main], [11, 5, c.main], [12, 5, c.main], [13, 5, c.dark], [14, 5, c.shadow],
+    [4, 6, c.shadow], [5, 6, c.dark], [6, 6, c.main], [7, 6, c.main], [8, 6, c.main], [9, 6, c.main], [10, 6, c.main], [11, 6, c.main], [12, 6, c.dark], [13, 6, c.shadow],
+    // 底部圆润
+    [5, 7, c.shadow], [6, 7, c.dark], [7, 7, c.main], [8, 7, c.main], [9, 7, c.main], [10, 7, c.main], [11, 7, c.dark], [12, 7, c.shadow],
+    [6, 8, c.shadow], [7, 8, c.dark], [8, 8, c.dark], [9, 8, c.dark], [10, 8, c.dark], [11, 8, c.shadow],
+    // 腿 (6条，更明显)
+    [2, 6, c.dark], [2, 7, c.shadow], [1, 7, c.shadow],
+    [3, 7, c.dark], [3, 8, c.shadow],
+    [14, 7, c.dark], [14, 8, c.shadow],
+    [15, 6, c.dark], [15, 7, c.shadow], [16, 7, c.shadow],
+    [5, 9, c.dark], [5, 10, c.shadow],
+    [12, 9, c.dark], [12, 10, c.shadow],
+  ];
 });
 
-// 霓虹发光颜色映射
-const themeColors = computed(() => {
-  if (isStrongUp.value) return "var(--yj-up, #ff3b30)";
-  if (isUpMood.value) return "var(--yj-up, #ff6b22)";
-  if (isStrongDown.value) return "var(--yj-down, #34c759)";
-  if (isDownMood.value) return "var(--yj-down, #30d158)";
-  if (isWaiting.value) return "#0a84ff"; // 科技蓝
-  return "#ff1e1e"; // 默认状态使用 3D 图片中标志性的红色
+// 左钳子 (更大更圆润)
+const leftClawPixels = computed(() => {
+  const c = colors.value;
+  return [
+    [0, 3, c.dark], [0, 4, c.main], [0, 5, c.dark],
+    [1, 2, c.dark], [1, 3, c.light], [1, 4, c.highlight], [1, 5, c.main], [1, 6, c.shadow],
+    [2, 2, c.main], [2, 3, c.light], [2, 4, c.highlight], [2, 5, c.main], [2, 6, c.dark],
+    [3, 3, c.main], [3, 4, c.light], [3, 5, c.dark],
+  ];
+});
+
+// 右钳子 (更大更圆润)
+const rightClawPixels = computed(() => {
+  const c = colors.value;
+  return [
+    [15, 3, c.dark], [15, 4, c.main], [15, 5, c.dark],
+    [16, 2, c.dark], [16, 3, c.light], [16, 4, c.highlight], [16, 5, c.main], [16, 6, c.shadow],
+    [17, 2, c.main], [17, 3, c.light], [17, 4, c.highlight], [17, 5, c.main], [17, 6, c.dark],
+    [18, 3, c.main], [18, 4, c.light], [18, 5, c.dark],
+  ];
+});
+
+// 眼睛柄 (更明显)
+const eyeStalkPixels = computed(() => {
+  const c = colors.value;
+  return [
+    [6, 0, c.dark], [7, -1, c.dark],
+    [11, -1, c.dark], [12, 0, c.dark],
+  ];
+});
+
+// 眼睛 (更大更可爱)
+const eyePixels = computed(() => {
+  const c = colors.value;
+  const pixels: [number, number, string][] = [];
+
+  if (blink.value) {
+    // 眨眼 - 弯弯的眯眼
+    pixels.push([5, -2, c.black], [6, -3, c.black], [7, -2, c.black]);
+    pixels.push([11, -2, c.black], [12, -3, c.black], [13, -2, c.black]);
+  } else if (isStrongUp.value) {
+    // 超开心弯眼 ^ ^
+    pixels.push([5, -3, c.black], [6, -4, c.black], [7, -3, c.black]);
+    pixels.push([5, -2, c.black], [7, -2, c.black]);
+    pixels.push([11, -3, c.black], [12, -4, c.black], [13, -3, c.black]);
+    pixels.push([11, -2, c.black], [13, -2, c.black]);
+  } else if (isStrongDown.value) {
+    // X眼 + 眼泪
+    pixels.push([5, -4, c.black], [6, -3, c.black], [7, -2, c.black]);
+    pixels.push([5, -2, c.black], [6, -3, c.black], [7, -4, c.black]);
+    pixels.push([11, -4, c.black], [12, -3, c.black], [13, -2, c.black]);
+    pixels.push([11, -2, c.black], [12, -3, c.black], [13, -4, c.black]);
+    // 眼泪
+    pixels.push([4, -1, c.tear], [4, 0, c.tear]);
+    pixels.push([14, -1, c.tear], [14, 0, c.tear]);
+  } else if (isDownMood.value) {
+    // 委屈下垂眼
+    pixels.push([5, -4, c.black], [6, -3, c.black], [7, -3, c.black], [7, -2, c.black]);
+    pixels.push([11, -4, c.black], [12, -3, c.black], [13, -3, c.black], [13, -2, c.black]);
+  } else if (isWaiting.value) {
+    // 发呆点眼 (´・ω・`)
+    pixels.push([6, -3, c.black]);
+    pixels.push([12, -3, c.black]);
+  } else {
+    // 默认大圆眼 - 更可爱
+    pixels.push([5, -4, c.black], [6, -4, c.black], [7, -4, c.black]);
+    pixels.push([5, -3, c.black], [6, -3, c.white], [7, -3, c.black]);
+    pixels.push([5, -2, c.black], [6, -2, c.black], [7, -2, c.black]);
+    // 高光点
+    pixels.push([6, -4, c.white]);
+    pixels.push([11, -4, c.black], [12, -4, c.black], [13, -4, c.black]);
+    pixels.push([11, -3, c.black], [12, -3, c.white], [13, -3, c.black]);
+    pixels.push([11, -2, c.black], [12, -2, c.black], [13, -2, c.black]);
+    pixels.push([12, -4, c.white]);
+  }
+  return pixels;
+});
+
+// 嘴巴 (更丰富)
+const mouthPixels = computed(() => {
+  const c = colors.value;
+  const pixels: [number, number, string][] = [];
+
+  if (isStrongUp.value) {
+    // 大笑 w形嘴
+    pixels.push([7, 6, c.black], [8, 5, c.black], [9, 5, c.white], [10, 5, c.black], [11, 6, c.black]);
+    pixels.push([7, 7, c.black], [8, 7, c.black], [9, 7, c.black], [10, 7, c.black]);
+  } else if (isUpMood.value) {
+    // 开心微笑
+    pixels.push([8, 6, c.black], [9, 6, c.black], [10, 6, c.black]);
+  } else if (isStrongDown.value) {
+    // 大哭波浪嘴
+    pixels.push([7, 6, c.black], [8, 7, c.black], [9, 6, c.black], [10, 7, c.black], [11, 6, c.black]);
+  } else if (isDownMood.value) {
+    // 委屈撇嘴
+    pixels.push([7, 7, c.black], [8, 6, c.black], [9, 7, c.black], [10, 6, c.black], [11, 7, c.black]);
+  } else if (isWaiting.value) {
+    // 发呆小o嘴
+    pixels.push([8, 6, c.black], [9, 6, c.black], [10, 6, c.black]);
+    pixels.push([8, 7, c.black], [10, 7, c.black]);
+    pixels.push([8, 8, c.black], [9, 8, c.black], [10, 8, c.black]);
+  } else {
+    // 默认小嘴
+    pixels.push([8, 6, c.black], [9, 6, c.black], [10, 6, c.black]);
+  }
+  return pixels;
+});
+
+// 腮红 (更明显)
+const cheekPixels = computed(() => {
+  if (isStrongDown.value) return [];
+  const c = colors.value;
+  if (isStrongUp.value) {
+    // 超开心大腮红
+    return [
+      [3, 4, c.cheek], [4, 4, c.cheek], [3, 5, c.cheek],
+      [14, 4, c.cheek], [15, 4, c.cheek], [15, 5, c.cheek],
+    ];
+  }
+  if (isUpMood.value) {
+    return [
+      [3, 4, c.cheek], [4, 4, c.cheek],
+      [14, 4, c.cheek], [15, 4, c.cheek],
+    ];
+  }
+  return [];
+});
+
+// 生成 box-shadow
+function toShadow(pixels: [number, number, string][]) {
+  return pixels.map(([x, y, c]) => `${x * P}px ${y * P}px ${c}`).join(", ");
+}
+
+const bodyShadow = computed(() => toShadow(bodyPixels.value));
+const leftClawShadow = computed(() => toShadow(leftClawPixels.value));
+const rightClawShadow = computed(() => toShadow(rightClawPixels.value));
+const eyeStalkShadow = computed(() => toShadow(eyeStalkPixels.value));
+const eyeShadow = computed(() => toShadow(eyePixels.value));
+const mouthShadow = computed(() => toShadow(mouthPixels.value));
+const cheekShadow = computed(() => toShadow(cheekPixels.value));
+
+const clawAnim = computed(() => {
+  if (isStrongUp.value) return "happy";
+  if (isStrongDown.value) return "sad";
+  if (isUpMood.value) return "cheer";
+  return "";
 });
 </script>
 
 <template>
   <div
-    class="brand-elf-shell"
+    class="crab-mascot"
+    :class="clawAnim"
+    :data-bucket="bucket"
     role="img"
     :aria-label="ariaLabel"
-    :data-bucket="bucket"
-    :data-theme="theme"
-    :style="{ '--elf-anim-delay': phaseDelay, '--elf-glow-color': themeColors }"
   >
-    <svg
-      class="elf-svg"
-      viewBox="0 0 100 100"
-      width="24"
-      height="24"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <defs>
-        <!-- 3D 身体材质：黑曜石/亮黑球体渐变 -->
-        <radialGradient :id="`body-grad-${svgUid}`" cx="35%" cy="35%" r="65%">
-          <stop offset="0%" stop-color="#b3e5fc" />
-          <stop offset="20%" stop-color="#4fc3f7" />
-          <stop offset="55%" stop-color="#0288d1" />
-          <stop offset="80%" stop-color="#01579b" />
-          <stop offset="100%" stop-color="#0d2137" />
-        </radialGradient>
-
-        <!-- 水晶尾巴材质：通透渐变 -->
-        <linearGradient :id="`tail-grad-${svgUid}`" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stop-color="#81d4fa" />
-          <stop offset="35%" stop-color="#4fc3f7" />
-          <stop offset="65%" stop-color="#29b6f6" />
-          <stop offset="85%" stop-color="#0277bd" />
-          <stop offset="100%" stop-color="#01579b" />
-        </linearGradient>
-
-        <!-- 霓虹发光滤镜 -->
-        <filter :id="`neon-glow-${svgUid}`" x="-50%" y="-50%" width="200%" height="200%">
-          <feGaussianBlur stdDeviation="1.5" result="blur1" />
-          <feGaussianBlur stdDeviation="3" result="blur2" />
-          <feMerge>
-            <feMergeNode in="blur2" />
-            <feMergeNode in="blur1" />
-            <feMergeNode in="SourceGraphic" />
-          </feMerge>
-        </filter>
-      </defs>
-
-      <g class="elf-group">
-        <!-- 尾巴 (液态金属质感，从右后方卷起，3/4 透视) -->
-        <path
-          class="elf-tail"
-          d="M 55 35 C 70 5, 95 15, 95 45 C 95 65, 80 85, 65 85 C 75 80, 82 65, 80 45 C 78 25, 65 20, 55 35 Z"
-          :fill="`url(#tail-grad-${svgUid})`"
-        />
-
-        <!-- 身体 (水晶通透质感，水滴状，3/4 透视) -->
-        <path
-          class="elf-body"
-          d="M 45 92 C 10 92, 5 55, 22 32 C 35 12, 65 15, 75 40 C 85 65, 75 92, 45 92 Z"
-          :fill="`url(#body-grad-${svgUid})`"
-          fill-opacity="0.88"
-          stroke="#4fc3f7"
-          stroke-width="0.8"
-          stroke-opacity="0.5"
-        />
-
-        <!-- 身体高光 (左上角强反光，更亮更通透) -->
-        <path
-          class="elf-highlight"
-          d="M 25 40 C 35 25, 55 25, 60 35 C 55 30, 40 28, 30 42 C 28 45, 24 43, 25 40 Z"
-          fill="#e3f2fd"
-          opacity="0.65"
-          filter="blur(1px)"
-        />
-
-        <!-- 侧鳍/小脚 (水晶质感，3/4 透视，左远右近) -->
-        <ellipse class="elf-fin elf-fin--l" cx="22" cy="78" rx="3.5" ry="6" :fill="`url(#tail-grad-${svgUid})`" transform="rotate(-30 22 78)" />
-        <ellipse class="elf-fin elf-fin--r" cx="58" cy="86" rx="4.5" ry="8" :fill="`url(#tail-grad-${svgUid})`" transform="rotate(-15 58 86)" />
-
-        <!-- 五官 (红光/主题色发光) -->
-        <g class="elf-face" :filter="`url(#neon-glow-${svgUid})`">
-          <!-- 眼睛 -->
-          <path 
-            class="elf-eye" 
-            :d="eyePaths.l" 
-            fill="none" 
-            :stroke="themeColors" 
-            stroke-width="3.5" 
-            stroke-linecap="round" 
-            stroke-linejoin="round" 
-          />
-          <path 
-            class="elf-eye" 
-            :d="eyePaths.r" 
-            fill="none" 
-            :stroke="themeColors" 
-            stroke-width="3.5" 
-            stroke-linecap="round" 
-            stroke-linejoin="round" 
-          />
-          
-          <!-- 嘴巴 -->
-          <path 
-            class="elf-mouth" 
-            :d="mouthPath" 
-            fill="none" 
-            :stroke="themeColors" 
-            stroke-width="2.5" 
-            stroke-linecap="round" 
-            stroke-linejoin="round" 
-            opacity="0.9"
-          />
-        </g>
-      </g>
-    </svg>
+    <div class="pixel crab-body" :style="{ boxShadow: bodyShadow }"></div>
+    <div class="pixel crab-claw claw-l" :style="{ boxShadow: leftClawShadow }"></div>
+    <div class="pixel crab-claw claw-r" :style="{ boxShadow: rightClawShadow }"></div>
+    <div class="pixel crab-stalk" :style="{ boxShadow: eyeStalkShadow }"></div>
+    <div class="pixel crab-eye" :style="{ boxShadow: eyeShadow }"></div>
+    <div class="pixel crab-mouth" :style="{ boxShadow: mouthShadow }"></div>
+    <div v-if="cheekShadow" class="pixel crab-cheek" :style="{ boxShadow: cheekShadow }"></div>
   </div>
 </template>
 
 <style scoped>
-.brand-elf-shell {
+.crab-mascot {
+  position: relative;
+  width: 28px;
+  height: 20px;
   flex-shrink: 0;
-  line-height: 0;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  /* 垂直居中对齐 */
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
-  margin-right: 2px;
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4));
 }
 
-.elf-svg {
-  width: 100%;
-  height: 100%;
-  overflow: visible;
+.pixel {
+  position: absolute;
+  top: 12px;
+  left: -1px;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
 }
 
-/* 动画：整体悬浮呼吸 */
-.elf-group {
-  transform-origin: 50px 50px;
-  animation: elf-float 4s ease-in-out infinite;
-  animation-delay: var(--elf-anim-delay);
+.crab-body {
+  animation: idle 2s ease-in-out infinite;
 }
 
-@keyframes elf-float {
-  0%, 100% { transform: translateY(0) scale(1); }
-  50% { transform: translateY(-2px) scale(1.02); }
+.crab-eye {
+  animation: eye-sparkle 3s ease-in-out infinite;
 }
 
-/* 动画：尾巴轻微摆动 */
-.elf-tail {
-  transform-origin: 65px 65px;
-  animation: elf-tail-wag 4s ease-in-out infinite;
-  animation-delay: var(--elf-anim-delay);
+.crab-claw {
+  transform-origin: center right;
+  transition: transform 0.2s ease;
 }
 
-@keyframes elf-tail-wag {
-  0%, 100% { transform: rotate(0deg) scale(1); }
-  50% { transform: rotate(-4deg) scale(1.02); }
+.claw-r {
+  transform-origin: center left;
 }
 
-/* 动画：鳍部微动 */
-.elf-fin {
-  transform-origin: center;
-  animation: elf-fin-flap 4s ease-in-out infinite;
-  animation-delay: var(--elf-anim-delay);
+/* 开心时钳子举起摇摆 */
+.crab-mascot.happy .claw-l {
+  animation: wave-left 0.3s ease-in-out infinite;
 }
 
-@keyframes elf-fin-flap {
-  0%, 100% { transform: scaleX(1) rotate(var(--rot, 0deg)); }
-  50% { transform: scaleX(0.8) rotate(var(--rot, 0deg)); }
-}
-.elf-fin--l { --rot: -30deg; }
-.elf-fin--r { --rot: 20deg; }
-
-/* 动画：面部微表情跟随浮动 (3/4 视差) */
-.elf-face {
-  transform-origin: 31px 58px;
-  animation: elf-face-shift 4s ease-in-out infinite;
-  animation-delay: var(--elf-anim-delay);
+.crab-mascot.happy .claw-r {
+  animation: wave-right 0.3s ease-in-out infinite;
 }
 
-@keyframes elf-face-shift {
-  0%, 100% { transform: translate(0, 0) scale(1); }
-  50% { transform: translate(0.5px, 1.5px) scale(0.98); }
+.crab-mascot.happy .crab-body {
+  animation: bounce 0.4s ease-in-out infinite;
+  filter: drop-shadow(0 0 3px rgba(255, 200, 0, 0.6));
 }
 
-/* 大跌时的脉冲闪烁效果 */
-.brand-elf-shell[data-bucket^="strongDown"] .elf-face {
-  animation: elf-alert-pulse 1.5s ease-in-out infinite;
+/* 轻松开心 */
+.crab-mascot.cheer .claw-l {
+  animation: sway-left 0.6s ease-in-out infinite;
 }
 
-@keyframes elf-alert-pulse {
+.crab-mascot.cheer .claw-r {
+  animation: sway-right 0.6s ease-in-out infinite;
+}
+
+/* 难过时钳子下垂 */
+.crab-mascot.sad .claw-l,
+.crab-mascot.sad .claw-r {
+  transform: translateY(2px) scaleY(0.85);
+}
+
+.crab-mascot.sad .crab-body {
+  animation: shiver 0.2s ease-in-out infinite;
+}
+
+@keyframes idle {
+  0%, 100% { transform: translateY(0) scaleY(1); }
+  50% { transform: translateY(-0.5px) scaleY(1.02); }
+}
+
+@keyframes bounce {
+  0%, 100% { transform: translateY(0) scaleY(1); }
+  50% { transform: translateY(-1.5px) scaleY(1.03); }
+}
+
+@keyframes eye-sparkle {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+  50% { opacity: 0.9; }
+}
+
+@keyframes wave-left {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(-30deg) translateY(-3px); }
+}
+
+@keyframes wave-right {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(30deg) translateY(-3px); }
+}
+
+@keyframes sway-left {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(-15deg); }
+}
+
+@keyframes sway-right {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(15deg); }
+}
+
+@keyframes shiver {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-0.5px); }
+  75% { transform: translateX(0.5px); }
 }
 </style>

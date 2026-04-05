@@ -6,6 +6,20 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
+use std::cell::RefCell;
+use std::thread_local;
+
+thread_local! {
+    static PROXY_URL: RefCell<String> = RefCell::new(String::new());
+}
+
+pub fn set_proxy(url: &str) {
+    PROXY_URL.with(|p| *p.borrow_mut() = url.to_string());
+}
+
+pub fn get_proxy() -> String {
+    PROXY_URL.with(|p| p.borrow().clone())
+}
 
 /// 单行行情（与前端列 id 对应的数据字段）
 #[derive(Debug, Clone, Serialize)]
@@ -181,12 +195,17 @@ fn em_client() -> Result<reqwest::Client, String> {
         REFERER,
         HeaderValue::from_static("http://quote.eastmoney.com/"),
     );
-    reqwest::Client::builder()
+    let proxy_url = get_proxy();
+    let mut builder = reqwest::Client::builder()
         .default_headers(headers)
         .timeout(Duration::from_secs(15))
-        .connect_timeout(Duration::from_secs(8))
-        .build()
-        .map_err(|e| e.to_string())
+        .connect_timeout(Duration::from_secs(8));
+    if !proxy_url.is_empty() {
+        if let Ok(proxy) = reqwest::Proxy::http(&proxy_url) {
+            builder = builder.proxy(proxy);
+        }
+    }
+    builder.build().map_err(|e| e.to_string())
 }
 
 /// 盘口异动接口（`push2ex.eastmoney.com`）需行情中心异动页 Referer，与 `em_client` 分列避免影响其它请求。
@@ -202,12 +221,17 @@ fn em_changes_client() -> Result<reqwest::Client, String> {
         REFERER,
         HeaderValue::from_static("https://quote.eastmoney.com/changes/"),
     );
-    reqwest::Client::builder()
+    let proxy_url = get_proxy();
+    let mut builder = reqwest::Client::builder()
         .default_headers(headers)
         .timeout(Duration::from_secs(20))
-        .connect_timeout(Duration::from_secs(8))
-        .build()
-        .map_err(|e| e.to_string())
+        .connect_timeout(Duration::from_secs(8));
+    if !proxy_url.is_empty() {
+        if let Ok(proxy) = reqwest::Proxy::http(&proxy_url) {
+            builder = builder.proxy(proxy);
+        }
+    }
+    builder.build().map_err(|e| e.to_string())
 }
 
 /// `eq142xsc2605` → `142.sc2605`（东财期货/全球品种 QuoteID 转 secid）
@@ -238,7 +262,7 @@ fn glob_code_primary_secid_lc(c: &str) -> Option<&'static str> {
     }
 }
 
-/// `sh600519` / `sz000001` / `bj920174` / `hkhsi`（恒生指数）→ 东财 `secid`
+/// `sh600519` / `sz000001` / `bj920174` / `hk02513` / `hkhsi`（恒生指数）→ 东财 `secid`
 pub fn code_to_secid(code: &str) -> Option<String> {
     let c = code.trim().to_lowercase();
     if let Some(s) = glob_code_primary_secid_lc(&c) {
@@ -257,6 +281,13 @@ pub fn code_to_secid(code: &str) -> Option<String> {
     if c == "ndx" {
         return Some("100.NDX".into());
     }
+    // HK stocks: hk02513 → 116.02513
+    if let Some(rest) = c.strip_prefix("hk") {
+        if rest.is_empty() || !rest.chars().all(|ch| ch.is_ascii_digit()) {
+            return None;
+        }
+        return Some(format!("116.{}", rest));
+    }
     let (prefix, num) = if let Some(rest) = c.strip_prefix("sh") {
         ("1", rest)
     } else if let Some(rest) = c.strip_prefix("sz") {
@@ -272,9 +303,16 @@ pub fn code_to_secid(code: &str) -> Option<String> {
     Some(format!("{}.{}", prefix, num))
 }
 
-/// 内部 `sh600519` / `sz000001` / `bj920174` → 东财 `QuoteID`（与股吧、搜索接口一致）
+/// 内部 `sh600519` / `sz000001` / `bj920174` / `hk02513` → 东财 `QuoteID`（与股吧、搜索接口一致）
 fn internal_to_quote_id(code: &str) -> Option<String> {
     let c = code.trim().to_lowercase();
+    // HK stocks: hk02513 → 116.02513
+    if let Some(rest) = c.strip_prefix("hk") {
+        if rest.is_empty() || !rest.chars().all(|ch| ch.is_ascii_digit()) {
+            return None;
+        }
+        return Some(format!("116.{}", rest));
+    }
     let (mkt, raw_num) = if let Some(r) = c.strip_prefix("sh") {
         ("1", r)
     } else if let Some(r) = c.strip_prefix("sz") {
@@ -316,11 +354,17 @@ fn internal_code_to_ulist_sec(code: &str) -> Option<String> {
         ("SZ", r)
     } else if let Some(r) = c.strip_prefix("bj") {
         ("BJ", r)
+    } else if let Some(r) = c.strip_prefix("hk") {
+        ("HK", r)
     } else {
         return None;
     };
     if num_raw.is_empty() || !num_raw.chars().all(|ch| ch.is_ascii_digit()) {
         return None;
+    }
+    // HK stocks use secid format: 116.02513
+    if head == "HK" {
+        return Some(format!("116.{}", num_raw));
     }
     let n: u32 = num_raw.parse().ok()?;
     let padded = format!("{:06}", n);
@@ -497,20 +541,34 @@ fn em_guba_sc_to_internal(sc: &str) -> Option<String> {
 }
 
 /// 东财 `QuoteID`（如 `1.600519`）→ 内部 `sh600519`；期货/外盘如 `142.sc2605` → `eq142xsc2605`
+/// HK 股票如 `116.HK02513` → `hk02513`
 pub fn quote_id_to_code(quote_id: &str) -> Option<String> {
     let q = quote_id.trim();
     let (mkt, rest) = q.split_once('.')?;
     match mkt {
-        "1" | "0" | "116" => {
+        "1" | "0" => {
             let n: u32 = rest.parse().ok()?;
             let padded = format!("{:06}", n);
             let code = match mkt {
                 "1" => format!("sh{padded}"),
                 "0" => format!("sz{padded}"),
-                "116" => format!("bj{padded}"),
                 _ => unreachable!(),
             };
             Some(code)
+        }
+        "116" => {
+            let r = rest.trim();
+            // HK stocks: 116.HK02513 → hk02513
+            if r.len() >= 3 && r[..2].eq_ignore_ascii_case("hk") {
+                let num_part = &r[2..];
+                if num_part.chars().all(|c| c.is_ascii_digit()) {
+                    return Some(format!("hk{num_part}"));
+                }
+            }
+            // BJ stocks: 116.920174 → bj920174
+            let n: u32 = rest.parse().ok()?;
+            let padded = format!("{:06}", n);
+            Some(format!("bj{padded}"))
         }
         _ => {
             if !mkt.chars().all(|ch| ch.is_ascii_digit()) {
@@ -680,6 +738,17 @@ fn code_digits_match_f12(internal_lower: &str, f12: &str) -> bool {
     }
     if internal_lower == "glob_zc" && t.eq_ignore_ascii_case("zc888") {
         return true;
+    }
+    // HK stocks: hk02513 matches f12 "02513" / "2513"
+    if internal_lower.starts_with("hk") {
+        let num = &internal_lower[2..];
+        // f12 is typically the numeric code like "02513"
+        if t == num { return true; }
+        // also try without leading zeros
+        if let (Ok(a), Ok(b)) = (t.parse::<u32>(), num.parse::<u32>()) {
+            if a == b { return true; }
+        }
+        return false;
     }
     let digits: String = internal_lower
         .chars()
@@ -1198,6 +1267,9 @@ struct SuggestDataRow {
     name: String,
     #[serde(rename = "QuoteID")]
     quote_id: String,
+    /// 市场：HK=港股, SH/SZ/BJ 等
+    #[serde(rename = "JYS", default)]
+    jjs: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1298,9 +1370,19 @@ pub async fn search_securities_eastmoney(query: &str) -> Result<Vec<SuggestItem>
         if qid.is_empty() || !seen_quote.insert(qid.to_lowercase()) {
             continue;
         }
-        let Some(internal) = quote_id_to_code(&qid) else {
+        let Some(mut internal) = quote_id_to_code(&qid) else {
             continue;
         };
+        // HK stocks: QuoteID 116.02513 会被 quote_id_to_code 误判为 bj002513，
+        // 需要按 JYS 字段修正为 hk02513
+        if r.jjs == "HK" {
+            if let Some(num) = qid.split('.').nth(1) {
+                let num = num.trim();
+                if !num.is_empty() && num.chars().all(|c| c.is_ascii_digit()) {
+                    internal = format!("hk{}", num);
+                }
+            }
+        }
         out.push(SuggestItem {
             code: internal,
             name: r.name,
