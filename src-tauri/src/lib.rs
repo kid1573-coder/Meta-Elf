@@ -159,7 +159,7 @@ impl Default for AppSettings {
                 "sectorPct".into(),
             ],
             panel_mode: "normal".into(),
-            auto_hide_edge: true,
+            auto_hide_edge: false,
             color_scheme: "redUp".into(),
             profit_display: "both".into(),
             opacity: 0.94,

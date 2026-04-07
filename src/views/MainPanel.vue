@@ -1237,15 +1237,18 @@ async function ctxMoveDown() {
   letter-spacing: 0.04em;
   cursor: pointer;
   border-radius: 8px;
-  margin: -2px -4px;
+  margin: 0 -4px;
   padding: 2px 4px;
 }
 
 .brand-face {
+  position: relative;
+  top: 0;
   flex-shrink: 0;
   line-height: 0;
   display: flex;
   align-items: center;
+  transform: translateY(-5px);
 }
 
 .name {
