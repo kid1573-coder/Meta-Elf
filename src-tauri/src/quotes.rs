@@ -2,15 +2,33 @@ use chrono::{FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelik
 use futures::future::join_all;
 use rand::Rng;
 use reqwest::header::{HeaderMap, HeaderValue, REFERER, USER_AGENT};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::cell::RefCell;
 use std::thread_local;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiSignal {
+    pub direction: String,
+    pub up_prob: u8,
+    pub down_prob: u8,
+    pub exp_move_pct: f64,
+    #[serde(default)]
+    pub target_high: Option<f64>,
+    #[serde(default)]
+    pub target_low: Option<f64>,
+    pub confidence: u8,
+    pub label: String,
+    pub reason: String,
+}
+
 thread_local! {
     static PROXY_URL: RefCell<String> = RefCell::new(String::new());
+    static INDUSTRY_BOARD_CHANGE_CACHE: RefCell<Option<(Instant, HashMap<String, f64>)>> = RefCell::new(None);
+    static AI_SIGNAL_CACHE: RefCell<HashMap<String, (Instant, AiSignal)>> = RefCell::new(HashMap::new());
 }
 
 pub fn set_proxy(url: &str) {
@@ -1201,7 +1219,7 @@ pub async fn fetch_quotes_eastmoney(codes: &[String]) -> Result<Vec<QuoteRow>, S
         return Ok(vec![]);
     }
     let client = em_client()?;
-    let sector_map = fetch_industry_board_name_to_change(&client).await;
+    let sector_map = fetch_industry_board_name_to_change_cached(&client).await;
     let unique: Vec<String> = {
         let mut seen = std::collections::HashSet::new();
         let mut v = Vec::new();
@@ -2896,6 +2914,47 @@ fn attach_sector_change_from_map(row: &mut QuoteRow, map: &HashMap<String, f64>)
             return;
         }
     }
+
+    let mut best: Option<(usize, usize, f64)> = None;
+    let s_chars: Vec<char> = s.chars().collect();
+    for (k, &pct) in map.iter() {
+        if k.starts_with("BK") {
+            continue;
+        }
+        if !(k.contains(&s) || s.contains(k)) {
+            continue;
+        }
+        let k_chars: Vec<char> = k.chars().collect();
+        let mut pref = 0usize;
+        while pref < s_chars.len()
+            && pref < k_chars.len()
+            && s_chars[pref] == k_chars[pref]
+        {
+            pref += 1;
+        }
+        if pref < 2 {
+            continue;
+        }
+        let diff = if s_chars.len() > k_chars.len() {
+            s_chars.len() - k_chars.len()
+        } else {
+            k_chars.len() - s_chars.len()
+        };
+        if diff > 4 {
+            continue;
+        }
+        match best {
+            None => best = Some((pref, diff, pct)),
+            Some((bp, bd, _)) => {
+                if pref > bp || (pref == bp && diff < bd) {
+                    best = Some((pref, diff, pct));
+                }
+            }
+        }
+    }
+    if let Some((_, _, pct)) = best {
+        row.sector_change_pct = Some(pct);
+    }
 }
 
 /// 沪深行业板块 `clist` 全量分页 → 板块名 / `BK` 代码 → 当日涨跌幅（%）
@@ -2947,6 +3006,25 @@ async fn fetch_industry_board_name_to_change(client: &reqwest::Client) -> HashMa
         }
     }
     HashMap::new()
+}
+
+async fn fetch_industry_board_name_to_change_cached(client: &reqwest::Client) -> HashMap<String, f64> {
+    let hit = INDUSTRY_BOARD_CHANGE_CACHE.with(|c| {
+        let g = c.borrow();
+        g.as_ref()
+            .filter(|(t, _)| t.elapsed() < Duration::from_secs(60))
+            .map(|(_, m)| m.clone())
+    });
+    if let Some(m) = hit {
+        return m;
+    }
+    let m = fetch_industry_board_name_to_change(client).await;
+    if !m.is_empty() {
+        INDUSTRY_BOARD_CHANGE_CACHE.with(|c| {
+            *c.borrow_mut() = Some((Instant::now(), m.clone()));
+        });
+    }
+    m
 }
 
 /// 底部条：A 股核心宽基 + 港股（超短操盘手最需要盯的 7 个）
@@ -3329,6 +3407,436 @@ pub async fn get_market_moves_impl(quote_source: &str) -> Result<Vec<MarketMoveI
             break;
         }
     }
+    Ok(out)
+}
+
+#[derive(Debug, Clone)]
+struct AggBar {
+    time: i64,
+    open: f64,
+    high: f64,
+    low: f64,
+    close: f64,
+    volume: u64,
+    turnover: f64,
+    avg_price: f64,
+}
+
+fn fmt_hm(ts: i64) -> String {
+    shanghai_offset()
+        .timestamp_opt(ts, 0)
+        .single()
+        .map(|dt| format!("{:02}:{:02}", dt.hour(), dt.minute()))
+        .unwrap_or_else(|| "-".into())
+}
+
+fn aggregate_intraday(points: &[IntradayPoint], timeframe_min: u32) -> Vec<AggBar> {
+    if timeframe_min == 0 {
+        return vec![];
+    }
+    let mut out: Vec<AggBar> = Vec::new();
+    let mut cur_key: Option<u32> = None;
+    let mut cur: Option<AggBar> = None;
+    for p in points {
+        let Some(mm) = minutes_since_midnight_shanghai(p.time) else {
+            continue;
+        };
+        let k = mm / timeframe_min;
+        match (cur_key, &mut cur) {
+            (Some(ck), Some(bar)) if ck == k => {
+                bar.high = bar.high.max(p.high);
+                bar.low = bar.low.min(p.low);
+                bar.close = p.close;
+                bar.volume = bar.volume.saturating_add(p.volume);
+                bar.turnover = bar.turnover + p.turnover;
+                if p.avg_price > 0.0 {
+                    bar.avg_price = p.avg_price;
+                }
+            }
+            _ => {
+                if let Some(done) = cur.take() {
+                    out.push(done);
+                }
+                cur_key = Some(k);
+                cur = Some(AggBar {
+                    time: p.time,
+                    open: p.open,
+                    high: p.high,
+                    low: p.low,
+                    close: p.close,
+                    volume: p.volume,
+                    turnover: p.turnover,
+                    avg_price: p.avg_price,
+                });
+            }
+        }
+    }
+    if let Some(done) = cur {
+        out.push(done);
+    }
+    out
+}
+
+fn ai_cache_get(code: &str, timeframe_min: u32, ttl: Duration) -> Option<AiSignal> {
+    let key = format!("{}|{}", code.trim().to_lowercase(), timeframe_min);
+    AI_SIGNAL_CACHE.with(|c| {
+        let m = c.borrow();
+        m.get(&key)
+            .filter(|(t, _)| t.elapsed() < ttl)
+            .map(|(_, s)| s.clone())
+    })
+}
+
+fn ai_cache_put(code: &str, timeframe_min: u32, sig: &AiSignal) {
+    let key = format!("{}|{}", code.trim().to_lowercase(), timeframe_min);
+    AI_SIGNAL_CACHE.with(|c| {
+        let mut m = c.borrow_mut();
+        if m.len() > 2000 {
+            m.clear();
+        }
+        m.insert(key, (Instant::now(), sig.clone()));
+    });
+}
+
+fn ai_fallback_signal(bars: &[AggBar]) -> AiSignal {
+    let n = bars.len();
+    if n < 6 {
+        return AiSignal {
+            direction: "neutral".into(),
+            up_prob: 50,
+            down_prob: 50,
+            exp_move_pct: 0.0,
+            target_high: None,
+            target_low: None,
+            confidence: 40,
+            label: "观望".into(),
+            reason: "数据不足".into(),
+        };
+    }
+    let last = bars[n - 1].close;
+    let prev = bars[n - 6].close;
+    let pct = if prev.abs() > 1e-9 { (last - prev) / prev * 100.0 } else { 0.0 };
+    if pct > 0.25 {
+        AiSignal {
+            direction: "bullish".into(),
+            up_prob: 62,
+            down_prob: 38,
+            exp_move_pct: (pct * 100.0).round() / 100.0,
+            target_high: None,
+            target_low: None,
+            confidence: 58,
+            label: "偏多".into(),
+            reason: "短线走强".into(),
+        }
+    } else if pct < -0.25 {
+        AiSignal {
+            direction: "bearish".into(),
+            up_prob: 38,
+            down_prob: 62,
+            exp_move_pct: (pct * 100.0).round() / 100.0,
+            target_high: None,
+            target_low: None,
+            confidence: 58,
+            label: "偏空".into(),
+            reason: "短线走弱".into(),
+        }
+    } else {
+        AiSignal {
+            direction: "neutral".into(),
+            up_prob: 50,
+            down_prob: 50,
+            exp_move_pct: (pct * 100.0).round() / 100.0,
+            target_high: None,
+            target_low: None,
+            confidence: 50,
+            label: "震荡".into(),
+            reason: "区间盘整".into(),
+        }
+    }
+}
+
+fn normalize_ai_signal(mut sig: AiSignal) -> AiSignal {
+    let dir = sig.direction.trim().to_lowercase();
+    sig.direction = match dir.as_str() {
+        "bullish" | "bearish" | "neutral" => dir,
+        _ => "neutral".into(),
+    };
+    sig.up_prob = sig.up_prob.min(100);
+    sig.down_prob = sig.down_prob.min(100);
+    if sig.up_prob == 0 && sig.down_prob == 0 {
+        sig.up_prob = 50;
+        sig.down_prob = 50;
+    }
+    let sum = (sig.up_prob as u16) + (sig.down_prob as u16);
+    if sum != 100 && sum > 0 {
+        let up = (sig.up_prob as f64) / (sum as f64);
+        sig.up_prob = (up * 100.0).round().clamp(0.0, 100.0) as u8;
+        sig.down_prob = 100u8.saturating_sub(sig.up_prob);
+    }
+    if !sig.exp_move_pct.is_finite() {
+        sig.exp_move_pct = 0.0;
+    }
+    sig.exp_move_pct = sig.exp_move_pct.clamp(-10.0, 10.0);
+    sig.target_high = sig
+        .target_high
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .map(|v| (v * 100.0).round() / 100.0);
+    sig.target_low = sig
+        .target_low
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .map(|v| (v * 100.0).round() / 100.0);
+    sig.confidence = sig.confidence.min(100);
+    if sig.label.chars().count() > 6 {
+        sig.label = sig.label.chars().take(6).collect();
+    }
+    if sig.reason.chars().count() > 20 {
+        sig.reason = sig.reason.chars().take(20).collect();
+    }
+    sig
+}
+
+fn ai_u8(v: &Value, keys: &[&str], default_val: u8) -> u8 {
+    for k in keys {
+        if let Some(x) = v.get(*k) {
+            if let Some(n) = x.as_u64() {
+                return n.min(100) as u8;
+            }
+            if let Some(n) = x.as_i64() {
+                return n.clamp(0, 100) as u8;
+            }
+            if let Some(s) = x.as_str() {
+                if let Ok(n) = s.trim().parse::<i64>() {
+                    return n.clamp(0, 100) as u8;
+                }
+            }
+        }
+    }
+    default_val
+}
+
+fn ai_f64(v: &Value, keys: &[&str], default_val: f64) -> f64 {
+    for k in keys {
+        if let Some(x) = v.get(*k) {
+            if let Some(n) = x.as_f64() {
+                return n;
+            }
+            if let Some(s) = x.as_str() {
+                if let Ok(n) = s.trim().parse::<f64>() {
+                    return n;
+                }
+            }
+        }
+    }
+    default_val
+}
+
+fn ai_opt_f64(v: &Value, keys: &[&str]) -> Option<f64> {
+    for k in keys {
+        if let Some(x) = v.get(*k) {
+            if x.is_null() {
+                return None;
+            }
+            if let Some(n) = x.as_f64() {
+                return Some(n);
+            }
+            if let Some(s) = x.as_str() {
+                let t = s.trim();
+                if t.is_empty() || t.eq_ignore_ascii_case("null") || t == "-" || t == "—" {
+                    return None;
+                }
+                if let Ok(n) = t.parse::<f64>() {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn ai_str(v: &Value, keys: &[&str], default_val: &str) -> String {
+    for k in keys {
+        if let Some(x) = v.get(*k) {
+            if let Some(s) = x.as_str() {
+                let t = s.trim();
+                if !t.is_empty() {
+                    return t.to_string();
+                }
+            }
+        }
+    }
+    default_val.to_string()
+}
+
+fn parse_ai_signal_content(content: &str) -> Result<AiSignal, String> {
+    if let Ok(sig) = serde_json::from_str::<AiSignal>(content) {
+        return Ok(normalize_ai_signal(sig));
+    }
+    let v: Value = serde_json::from_str(content).map_err(|e| e.to_string())?;
+    let sig = AiSignal {
+        direction: ai_str(&v, &["direction", "dir", "trend"], "neutral"),
+        up_prob: ai_u8(&v, &["upProb", "up_prob", "riseProb", "bullProb"], 50),
+        down_prob: ai_u8(&v, &["downProb", "down_prob", "fallProb", "bearProb"], 50),
+        exp_move_pct: ai_f64(&v, &["expMovePct", "exp_move_pct", "expectedMovePct", "movePct"], 0.0),
+        target_high: ai_opt_f64(&v, &["targetHigh", "target_high", "predHigh", "predictedHigh", "highTarget"]),
+        target_low: ai_opt_f64(&v, &["targetLow", "target_low", "predLow", "predictedLow", "lowTarget"]),
+        confidence: ai_u8(&v, &["confidence", "conf"], 50),
+        label: ai_str(&v, &["label"], "震荡"),
+        reason: ai_str(&v, &["reason", "why"], "模型输出简化"),
+    };
+    Ok(normalize_ai_signal(sig))
+}
+
+fn ai_fallback_signal_from_quote(change_pct: f64, timeframe_min: u32) -> AiSignal {
+    let factor = ((timeframe_min as f64) / 120.0).clamp(0.2, 1.2);
+    let strength = (change_pct.abs() * 2.2).round().clamp(0.0, 25.0) as u8;
+    let mut up = 50u8;
+    let mut down = 50u8;
+    let dir = if change_pct > 0.15 {
+        up = (50 + strength).min(85);
+        down = 100 - up;
+        "bullish"
+    } else if change_pct < -0.15 {
+        down = (50 + strength).min(85);
+        up = 100 - down;
+        "bearish"
+    } else {
+        "neutral"
+    };
+    let exp_move = (change_pct * factor * 0.5).clamp(-5.0, 5.0);
+    AiSignal {
+        direction: dir.into(),
+        up_prob: up,
+        down_prob: down,
+        exp_move_pct: (exp_move * 10.0).round() / 10.0,
+        target_high: None,
+        target_low: None,
+        confidence: (45 + strength).min(75),
+        label: if dir == "bullish" { "偏多" } else if dir == "bearish" { "偏空" } else { "震荡" }.into(),
+        reason: "盘口动量估算".into(),
+    }
+}
+
+fn ai_client() -> Result<reqwest::Client, String> {
+    let proxy_url = get_proxy();
+    let mut builder = reqwest::Client::builder()
+        .timeout(Duration::from_secs(18))
+        .connect_timeout(Duration::from_secs(8));
+    if !proxy_url.is_empty() {
+        if let Ok(proxy) = reqwest::Proxy::http(&proxy_url) {
+            builder = builder.proxy(proxy);
+        }
+    }
+    builder.build().map_err(|e| e.to_string())
+}
+
+async fn deepseek_analyze(
+    client: &reqwest::Client,
+    api_key: &str,
+    code: &str,
+    timeframe_min: u32,
+    bars: &[AggBar],
+) -> Result<AiSignal, String> {
+    let mut slim: Vec<Value> = Vec::new();
+    for b in bars.iter().rev().take(20).rev() {
+        slim.push(serde_json::json!({
+            "t": fmt_hm(b.time),
+            "o": (b.open * 100.0).round() / 100.0,
+            "h": (b.high * 100.0).round() / 100.0,
+            "l": (b.low * 100.0).round() / 100.0,
+            "c": (b.close * 100.0).round() / 100.0,
+            "v": b.volume,
+        }));
+    }
+    let body = serde_json::json!({
+        "model": "deepseek-chat",
+        "temperature": 0.2,
+        "max_tokens": 260,
+        "messages": [
+            {"role": "system", "content": "你是短线看盘助手。只输出严格 JSON，不要任何额外文字。字段必须齐全：direction(bullish|bearish|neutral), upProb(0-100整数), downProb(0-100整数, upProb+downProb=100), expMovePct(-10到10之间数字, 表示本周期期望涨跌幅%), targetHigh(数字或null, 本周期预计最高价), targetLow(数字或null, 本周期预计最低价), confidence(0-100整数), label(<=4字中文), reason(<=14字中文)。若把握不足，targetHigh/targetLow 必须返回 null，不要猜。"},
+            {"role": "user", "content": format!("标的: {code}\n周期: {timeframe_min}分钟\nbars(最近20根): {}\n请给短线方向、概率、期望幅度、以及有把握时的预计最高/最低价。", serde_json::to_string(&slim).unwrap_or_default())}
+        ]
+    });
+    let resp = client
+        .post("https://api.deepseek.com/v1/chat/completions")
+        .header("Authorization", format!("Bearer {}", api_key.trim()))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let mut content = v
+        .pointer("/choices/0/message/content")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if content.is_empty() {
+        return Err("empty ai response".into());
+    }
+    if !content.starts_with('{') {
+        if let (Some(a), Some(b)) = (content.find('{'), content.rfind('}')) {
+            if b > a {
+                content = content[a..=b].to_string();
+            }
+        }
+    }
+    parse_ai_signal_content(&content)
+}
+
+pub async fn get_ai_signals_impl(
+    codes: Vec<String>,
+    timeframe_min: u32,
+    api_key: &str,
+) -> Result<HashMap<String, AiSignal>, String> {
+    if timeframe_min == 0 {
+        return Ok(HashMap::new());
+    }
+    let ttl = Duration::from_secs(60);
+    let mut out: HashMap<String, AiSignal> = HashMap::new();
+    let key = api_key.trim();
+    if key.is_empty() {
+        return Ok(out);
+    }
+    let client = ai_client()?;
+    let em = em_client()?;
+
+    let mut need: Vec<String> = Vec::new();
+    for c in codes.into_iter().take(60) {
+        let code = c.trim().to_lowercase();
+        if code.is_empty() {
+            continue;
+        }
+        if let Some(sig) = ai_cache_get(&code, timeframe_min, ttl) {
+            out.insert(code, sig);
+            continue;
+        }
+        need.push(code);
+    }
+
+    let mut new_calls = 0usize;
+    for code in need {
+        if new_calls >= 8 {
+            break;
+        }
+        let series = fetch_intraday_eastmoney(&em, &code).await;
+        let bars = aggregate_intraday(&series.points, timeframe_min);
+        let q = fetch_one_em(&em, &code).await;
+        let fallback = if bars.len() >= 4 {
+            ai_fallback_signal(&bars)
+        } else {
+            ai_fallback_signal_from_quote(q.change_pct, timeframe_min)
+        };
+        let sig = match deepseek_analyze(&client, key, &code, timeframe_min, &bars).await {
+            Ok(s) => s,
+            Err(_) => fallback,
+        };
+        ai_cache_put(&code, timeframe_min, &sig);
+        out.insert(code, sig);
+        new_calls += 1;
+    }
+
     Ok(out)
 }
 

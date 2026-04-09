@@ -39,6 +39,10 @@ pub struct AppSettings {
     pub quote_source: String,
     #[serde(default)]
     pub proxy_url: String,
+    #[serde(default)]
+    pub ai_enabled: bool,
+    #[serde(default)]
+    pub deepseek_api_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,6 +178,8 @@ impl Default for AppSettings {
             }],
             quote_source: default_quote_source(),
             proxy_url: String::new(),
+            ai_enabled: false,
+            deepseek_api_key: String::new(),
         }
     }
 }
@@ -278,6 +284,15 @@ async fn get_market_moves(quote_source: String) -> Result<Vec<quotes::MarketMove
 #[tauri::command]
 async fn get_market_ribbon(quote_source: String) -> Result<quotes::MarketRibbonSnapshot, String> {
     quotes::get_market_ribbon_impl(&quote_source).await
+}
+
+#[tauri::command]
+async fn get_ai_signals(
+    codes: Vec<String>,
+    timeframe_min: u32,
+    api_key: String,
+) -> Result<std::collections::HashMap<String, quotes::AiSignal>, String> {
+    quotes::get_ai_signals_impl(codes, timeframe_min, &api_key).await
 }
 
 /// 设置代理服务器
@@ -392,6 +407,7 @@ pub fn run() {
             get_stock_order_book,
             get_market_moves,
             get_market_ribbon,
+            get_ai_signals,
             apply_window_prefs,
             minimize_main_window,
             update_boss_shortcut,

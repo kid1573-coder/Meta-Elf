@@ -240,6 +240,28 @@ watch(
         </section>
 
         <section>
+          <h2>AI短线参考（DeepSeek）</h2>
+          <p class="sub">
+            开启后会用大模型生成 30 分钟 / 60 分钟短线方向，仅供参考。密钥仅保存在本机设置文件里。
+          </p>
+          <div class="row">
+            <label class="radio">
+              <input v-model="settings.aiEnabled" type="checkbox" />
+              启用 AI 短线列
+            </label>
+          </div>
+          <div class="row proxy" style="margin-top: 10px">
+            <input
+              v-model="settings.deepseekApiKey"
+              class="yj-field-control proxy-input"
+              type="password"
+              placeholder="DeepSeek API Key"
+              autocomplete="off"
+            />
+          </div>
+        </section>
+
+        <section>
           <h2>网络代理</h2>
           <p class="sub">如果无法获取行情数据（网络受限），可以配置代理服务器。留空则直连。</p>
           <div class="row proxy">

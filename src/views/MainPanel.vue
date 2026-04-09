@@ -8,7 +8,7 @@ import { useEdgeHide } from "../composables/useEdgeHide";
 import { DEFAULT_QUOTE_CODES } from "../constants/quote";
 import { LAST_WATCH_GROUP_KEY } from "../constants/watchGroup";
 import { COLUMN_DEFS, type QuoteRow, type WatchGroup } from "../types/app";
-import { changeClass, fmtFixed, fmtVolume, truncateUnicodeChars } from "../utils/format";
+import { changeClass, fmtFixed, fmtVolume } from "../utils/format";
 import { displayStockName } from "../utils/stockDisplay";
 import BrandElfMascot from "../components/BrandElfMascot.vue";
 import MarketRibbon from "../components/MarketRibbon.vue";
@@ -53,6 +53,129 @@ let ribbonPoll: ReturnType<typeof setInterval> | null = null;
 /** 市场快览（含板块）单次请求多路东财接口，略低于列表行情轮询，避免过猛；仍明显快于原 60s「像不刷新」 */
 const RIBBON_POLL_MS = 15_000;
 
+type AiSignal = {
+  direction: "bullish" | "bearish" | "neutral";
+  upProb: number;
+  downProb: number;
+  expMovePct: number;
+  targetHigh?: number | null;
+  targetLow?: number | null;
+  confidence: number;
+  label: string;
+  reason: string;
+};
+
+const ai30 = ref<Record<string, AiSignal>>({});
+let aiPoll: ReturnType<typeof setInterval> | null = null;
+const AI_POLL_MS = 75_000;
+
+function fallbackAiFromRow(row: QuoteRow, timeframeMin: number): AiSignal {
+  const cp = Number.isFinite(row.changePct) ? row.changePct : 0;
+  const amp =
+    row.prevClose > 0 && Number.isFinite(row.prevClose)
+      ? ((row.high - row.low) / row.prevClose) * 100
+      : 0;
+  const vr = typeof row.volumeRatio === "number" && Number.isFinite(row.volumeRatio) ? row.volumeRatio : 1;
+  const tr = typeof row.turnoverRate === "number" && Number.isFinite(row.turnoverRate) ? row.turnoverRate : 0;
+  const cr =
+    typeof row.commissionRatio === "number" && Number.isFinite(row.commissionRatio)
+      ? row.commissionRatio
+      : 0;
+  const codeSeed = row.code.split("").reduce((s, ch) => s + ch.charCodeAt(0), 0) % 7;
+  const factor = Math.max(0.2, Math.min(1.2, timeframeMin / 120));
+  const momentum = cp * 1.4 + (vr - 1) * 0.6 + cr * 0.08 + amp * 0.12 + tr * 0.05 + (codeSeed - 3) * 0.06;
+  const strength = Math.min(30, Math.max(0, Math.round(Math.abs(momentum) * 2.0)));
+  let up = 50;
+  let down = 50;
+  let direction: AiSignal["direction"] = "neutral";
+  if (momentum > 0.12) {
+    direction = "bullish";
+    up = Math.min(85, 50 + strength);
+    down = 100 - up;
+  } else if (momentum < -0.12) {
+    direction = "bearish";
+    down = Math.min(85, 50 + strength);
+    up = 100 - down;
+  }
+  const expMove = Math.max(-5, Math.min(5, momentum * factor * 0.45));
+  const base = row.price > 0 ? row.price : row.prevClose;
+  let targetHigh: number | null = null;
+  let targetLow: number | null = null;
+  if (base > 0 && strength >= 16) {
+    const swing = Math.max(0.25, Math.abs(expMove) * 0.9 + Math.max(0, amp) * 0.15);
+    if (direction === "bullish") {
+      targetHigh = base * (1 + swing / 100);
+      if (up >= 78) targetLow = base * (1 - Math.max(0.15, swing * 0.35) / 100);
+    } else if (direction === "bearish") {
+      targetLow = base * (1 - swing / 100);
+      if (down >= 78) targetHigh = base * (1 + Math.max(0.15, swing * 0.35) / 100);
+    }
+  }
+  return {
+    direction,
+    upProb: up,
+    downProb: down,
+    expMovePct: Math.round(expMove * 10) / 10,
+    targetHigh: targetHigh != null ? Math.round(targetHigh * 100) / 100 : null,
+    targetLow: targetLow != null ? Math.round(targetLow * 100) / 100 : null,
+    confidence: Math.min(75, 45 + strength),
+    label: direction === "bullish" ? "偏多" : direction === "bearish" ? "偏空" : "震荡",
+    reason: "盘口动量估算",
+  };
+}
+
+function aiCellText(sig: AiSignal): string {
+  const up = Math.max(0, Math.min(100, Math.round(sig.upProb)));
+  const dn = Math.max(0, Math.min(100, Math.round(sig.downProb)));
+  const mv = Number.isFinite(sig.expMovePct) ? sig.expMovePct : 0;
+  const mv2 = (Math.round(mv * 10) / 10).toFixed(1);
+  if (sig.direction === "bullish") return `涨${up}/+${mv2}`;
+  if (sig.direction === "bearish") return `跌${dn}/${mv2}`;
+  return `震${up}/${mv2}`;
+}
+
+async function loadAiSignalsOnce() {
+  const s = settings.value;
+  if (!s?.aiEnabled) return;
+  const listRows = displayRows.value.slice(0, 60);
+  const list = listRows.map((r) => r.code).filter(Boolean);
+
+  const base30: Record<string, AiSignal> = {};
+  for (const r of listRows) {
+    const k = r.code.toLowerCase();
+    base30[k] = fallbackAiFromRow(r, 30);
+  }
+
+  const key = (s.deepseekApiKey ?? "").trim();
+  if (!key) {
+    ai30.value = { ...ai30.value, ...base30 };
+    return;
+  }
+
+  try {
+    const m30m = await invoke<Record<string, AiSignal>>("get_ai_signals", {
+      codes: list,
+      timeframeMin: 30,
+      apiKey: key,
+    });
+    const merged: Record<string, AiSignal> = { ...ai30.value, ...base30 };
+    for (const [k, v] of Object.entries(m30m)) {
+      const looksTooGeneric =
+        v.direction === "neutral" &&
+        Math.round(v.upProb) === 50 &&
+        Math.round(v.downProb) === 50 &&
+        Math.abs(v.expMovePct) < 0.05 &&
+        (v.confidence ?? 0) <= 55;
+      if (!looksTooGeneric) {
+        merged[k] = v;
+      }
+    }
+    ai30.value = merged;
+  } catch {
+    ai30.value = { ...ai30.value, ...base30 };
+  }
+}
+
 useEdgeHide(settings);
 
 async function loadRibbon() {
@@ -88,7 +211,22 @@ watch(quoteSourceRef, () => {
 onMounted(() => {
   start();
   ribbonPoll = setInterval(() => void loadRibbon(), RIBBON_POLL_MS);
+  void loadAiSignalsOnce();
+  aiPoll = setInterval(() => void loadAiSignalsOnce(), AI_POLL_MS);
 });
+
+onUnmounted(() => {
+  if (aiPoll) clearInterval(aiPoll);
+  aiPoll = null;
+});
+
+watch(
+  () => [settings.value?.aiEnabled, settings.value?.deepseekApiKey],
+  () => {
+    void loadAiSignalsOnce();
+  },
+  { immediate: true },
+);
 
 function persistLastGroupId(id: string) {
   try {
@@ -148,9 +286,13 @@ const visibleCols = computed(() => {
   const s = settings.value;
   if (!s)
     return COLUMN_DEFS.filter((c) =>
-      ["name", "price", "changePct", "volumeRatio", "sectorBlock", "sectorPct"].includes(c.id),
+      ["name", "price", "changePct", "volumeRatio", "sectorBlock", "aiHighPred", "aiLowPred"].includes(c.id),
     );
   const set = new Set(s.visibleColumns);
+  if (set.has("sectorBlock")) {
+    set.add("aiHighPred");
+    set.add("aiLowPred");
+  }
   // 保持 COLUMN_DEFS 中定义的顺序
   return COLUMN_DEFS.filter((c) => set.has(c.id));
 });
@@ -165,6 +307,14 @@ const displayRows = computed(() => {
   if (!g) return orderQuoteRowsForPanel(rows.value, s.watchlist, "all");
   return orderQuoteRowsForGroupCodes(rows.value, g.codes);
 });
+
+watch(
+  () => displayRows.value.map((r) => r.code).join(","),
+  () => {
+    if (!settings.value?.aiEnabled) return;
+    void loadAiSignalsOnce();
+  },
+);
 
 const moodQuoteRows = computed(() => {
   const s = settings.value;
@@ -224,12 +374,21 @@ function displayName(row: QuoteRow): string {
   return displayStockName(row, settings.value);
 }
 
-const SECTOR_LABEL_MAX_CHARS = 4;
+function aiTargetValue(sig: AiSignal, kind: "high" | "low"): number | null {
+  const v = kind === "high" ? sig.targetHigh : sig.targetLow;
+  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return null;
+  return v;
+}
 
-function sectorBlockCellText(row: QuoteRow): string {
-  const n = row.sector?.trim() ?? "";
-  if (!n) return "—";
-  return truncateUnicodeChars(n, SECTOR_LABEL_MAX_CHARS);
+function aiTargetText(row: QuoteRow, sig: AiSignal, kind: "high" | "low"): string {
+  const target = aiTargetValue(sig, kind);
+  if (target == null) return "—";
+  if (sig.confidence < 68) return "—";
+  const base = row.price > 0 ? row.price : row.prevClose;
+  if (!(base > 0)) return "—";
+  const pct = ((target - base) / base) * 100;
+  if (!Number.isFinite(pct) || Math.abs(pct) < 0.35) return "—";
+  return `${fmtFixed(target, 2)} ${pct >= 0 ? "+" : ""}${fmtFixed(pct, 1)}%`;
 }
 
 function cell(row: QuoteRow, colId: string): string {
@@ -243,11 +402,17 @@ function cell(row: QuoteRow, colId: string): string {
         ? fmtFixed(row.volumeRatio, 2)
         : "—";
     case "sectorBlock":
-      return sectorBlockCellText(row);
-    case "sectorPct": {
-      const p = row.sectorChangePct;
-      if (p == null || !Number.isFinite(p)) return "—";
-      return `${p >= 0 ? "+" : ""}${fmtFixed(p, 2)}%`;
+      if (!settings.value?.aiEnabled) return "AI未开";
+      return aiCellText(ai30.value[row.code.toLowerCase()] ?? fallbackAiFromRow(row, 30));
+    case "aiHighPred": {
+      if (!settings.value?.aiEnabled) return "—";
+      const sig = ai30.value[row.code.toLowerCase()] ?? fallbackAiFromRow(row, 30);
+      return aiTargetText(row, sig, "high");
+    }
+    case "aiLowPred": {
+      if (!settings.value?.aiEnabled) return "—";
+      const sig = ai30.value[row.code.toLowerCase()] ?? fallbackAiFromRow(row, 30);
+      return aiTargetText(row, sig, "low");
     }
     case "amplitude": {
       if (row.prevClose <= 0 || !Number.isFinite(row.prevClose)) return "—";
@@ -288,9 +453,29 @@ function cell(row: QuoteRow, colId: string): string {
 function pctForRow(row: QuoteRow, colId: string): number | null {
   if (colId === "changePct") return row.changePct;
   if (colId === "dailyPl") return row.dailyPl;
-  if (colId === "sectorPct") {
-    const p = row.sectorChangePct;
-    return p != null && Number.isFinite(p) ? p : null;
+  if (colId === "sectorBlock") {
+    if (!settings.value?.aiEnabled) return null;
+    const sig = ai30.value[row.code.toLowerCase()] ?? fallbackAiFromRow(row, 30);
+    const mv = sig.expMovePct;
+    return Number.isFinite(mv) ? mv : null;
+  }
+  if (colId === "aiHighPred") {
+    if (!settings.value?.aiEnabled) return null;
+    const sig = ai30.value[row.code.toLowerCase()] ?? fallbackAiFromRow(row, 30);
+    const target = aiTargetValue(sig, "high");
+    const base = row.price > 0 ? row.price : row.prevClose;
+    if (target == null || !(base > 0) || sig.confidence < 68) return null;
+    const pct = ((target - base) / base) * 100;
+    return Number.isFinite(pct) && Math.abs(pct) >= 0.35 ? pct : null;
+  }
+  if (colId === "aiLowPred") {
+    if (!settings.value?.aiEnabled) return null;
+    const sig = ai30.value[row.code.toLowerCase()] ?? fallbackAiFromRow(row, 30);
+    const target = aiTargetValue(sig, "low");
+    const base = row.price > 0 ? row.price : row.prevClose;
+    if (target == null || !(base > 0) || sig.confidence < 68) return null;
+    const pct = ((target - base) / base) * 100;
+    return Number.isFinite(pct) && Math.abs(pct) >= 0.35 ? pct : null;
   }
   return null;
 }
@@ -828,7 +1013,11 @@ async function ctxMoveDown() {
                     <th
                       v-for="c in visibleCols"
                       :key="c.id"
-                      :class="{ num: c.id !== 'name', 'col-name': c.id === 'name' }"
+                      :class="{
+                        num: c.id !== 'name',
+                        'col-name': c.id === 'name',
+                        'col-ai': ['sectorBlock', 'aiHighPred', 'aiLowPred'].includes(c.id),
+                      }"
                     >
                       {{ c.label }}
                     </th>
@@ -857,6 +1046,7 @@ async function ctxMoveDown() {
                         :class="{
                           num: c.id !== 'name',
                           'col-name': c.id === 'name',
+                          'col-ai': ['sectorBlock', 'aiHighPred', 'aiLowPred'].includes(c.id),
                           chg:
                             c.id === 'changePct' ||
                             c.id === 'dailyPl' ||
@@ -864,12 +1054,7 @@ async function ctxMoveDown() {
                         }"
                       >
                         <span
-                          v-if="c.id === 'sectorBlock'"
-                          class="sector-block-cell sector-block-cell--w4 num"
-                          :title="r.sector?.trim() ? r.sector.trim() : undefined"
-                        >{{ sectorBlockCellText(r) }}</span>
-                        <span
-                          v-else-if="pctForRow(r, c.id) !== null"
+                          v-if="pctForRow(r, c.id) !== null"
                           :class="changeClass(pctForRow(r, c.id)!, settings?.colorScheme ?? 'redUp')"
                         >
                           {{ cell(r, c.id) }}
@@ -1465,6 +1650,17 @@ async function ctxMoveDown() {
   box-sizing: border-box;
   padding-left: 8px;
   padding-right: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.grid th.col-ai,
+.grid td.col-ai {
+  width: 8.6em;
+  min-width: 8.6em;
+  max-width: 8.6em;
+  padding-left: 10px;
+  padding-right: 6px;
   overflow: hidden;
   text-overflow: ellipsis;
 }

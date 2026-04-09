@@ -29,6 +29,8 @@ export type AppSettings = {
   quoteSource: "eastmoney" | "tencent" | "mock";
   /** HTTP 代理地址，如 `http://127.0.0.1:7890`，留空则直连 */
   proxyUrl: string;
+  aiEnabled?: boolean;
+  deepseekApiKey?: string;
 };
 
 export type SuggestItem = {
@@ -81,15 +83,16 @@ export const COLUMN_DEFS: ColumnDef[] = [
     { id: "price", label: "现价" },
     { id: "changePct", label: "涨跌幅" },
     { id: "volumeRatio", label: "量比" },
-    { id: "sectorBlock", label: "板块" },
-    { id: "sectorPct", label: "板块涨幅" },
+    { id: "sectorBlock", label: "AI30m" },
+    { id: "aiHighPred", label: "最高" },
+    { id: "aiLowPred", label: "最低" },
     { id: "amplitude", label: "振幅" },
     { id: "turnoverRate", label: "换手率" },
     { id: "volume", label: "成交量" },
     { id: "turnover", label: "成交额" },
     { id: "commissionRatio", label: "委比" },
-    { id: "high", label: "最高" },
-    { id: "low", label: "最低" },
+    { id: "high", label: "日高" },
+    { id: "low", label: "日低" },
     { id: "dailyPl", label: "当日盈亏" },
     { id: "totalPl", label: "总盈亏" },
     { id: "prevClose", label: "昨收" },
