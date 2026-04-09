@@ -1,265 +1,343 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="zh-CN">
 <head>
-<meta charset="utf-8">
-<title>像素精灵变体 — 圆滚滚胖胖可爱风</title>
-<style>
-  body { background: #1a1a2e; color: #eee; font-family: sans-serif; padding: 40px; }
-  h1 { text-align: center; margin-bottom: 6px; }
-  .sub { text-align: center; color: #888; margin-bottom: 36px; font-size: 13px; }
-  .grid { display: flex; flex-wrap: wrap; gap: 36px; justify-content: center; }
-  .card {
-    background: #16213e; border-radius: 16px; padding: 28px;
-    text-align: center; width: 220px;
-  }
-  .card h3 { margin: 14px 0 4px; font-size: 14px; color: #ccc; }
-  .card p { margin: 0; font-size: 11px; color: #777; line-height: 1.5; }
-  canvas { image-rendering: pixelated; image-rendering: crisp-edges; }
-  .canvas-wrap { display: flex; justify-content: center; }
-</style>
+  <meta charset="UTF-8">
+  <title>元精灵 - 终极像素吉祥物设计稿</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --text: #f8fafc;
+      --subtext: #94a3b8;
+      --accent: #38bdf8;
+      --border: #334155;
+    }
+    body {
+      font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 40px 20px;
+      margin: 0;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 50px;
+    }
+    .header h1 {
+      margin: 0 0 10px 0;
+      font-size: 32px;
+      letter-spacing: 2px;
+    }
+    .header p {
+      color: var(--subtext);
+      font-size: 16px;
+      max-width: 600px;
+      margin: 0 auto;
+      line-height: 1.6;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 30px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 30px 20px;
+      text-align: center;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      position: relative;
+      overflow: hidden;
+    }
+    .card:hover {
+      transform: translateY(-8px);
+      border-color: var(--accent);
+      box-shadow: 0 12px 24px -10px rgba(56, 189, 248, 0.3);
+    }
+    .canvas-wrapper {
+      margin: 0 auto 20px;
+      width: 160px;
+      height: 160px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(circle at center, #334155 0%, #0f172a 100%);
+      border-radius: 24px;
+      box-shadow: inset 0 4px 20px rgba(0,0,0,0.5);
+      border: 1px solid #475569;
+    }
+    canvas {
+      image-rendering: pixelated;
+      animation: float 3s ease-in-out infinite;
+    }
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-6px); }
+    }
+    .title {
+      font-size: 22px;
+      font-weight: bold;
+      color: var(--accent);
+      margin-bottom: 8px;
+    }
+    .desc {
+      font-size: 14px;
+      color: var(--subtext);
+      line-height: 1.5;
+      margin-bottom: 20px;
+      height: 42px;
+    }
+    .taskbar-preview {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding: 12px;
+      background: #0f172a;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      margin-top: 10px;
+    }
+    .taskbar-preview span {
+      font-size: 12px;
+      color: #64748b;
+    }
+    .taskbar-icon {
+      width: 24px;
+      height: 24px;
+      background: #1e293b;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .taskbar-icon canvas {
+      animation: none; /* No float in taskbar */
+    }
+  </style>
 </head>
 <body>
-<h1>像素精灵 — 圆滚滚可爱风</h1>
-<p class="sub">像忍耐兽/Snorlax 那种胖胖圆圆的可爱像素精灵，保留元精灵的绿色+金币元素</p>
-<div class="grid" id="grid"></div>
 
-<script>
-function draw(id, px, W, H, S) {
-  const c = document.getElementById(id);
-  c.width = W * S; c.height = H * S;
-  const ctx = c.getContext('2d');
-  for (const [x, y, col] of px) {
-    ctx.fillStyle = col;
-    ctx.fillRect(x * S, y * S, S, S);
-  }
-}
-function add(id, title, desc) {
-  const g = document.getElementById('grid');
-  const d = document.createElement('div');
-  d.className = 'card';
-  d.innerHTML = `<div class="canvas-wrap"><canvas id="${id}"></canvas></div><h3>${title}</h3><p>${desc}</p>`;
-  g.appendChild(d);
-}
+  <div class="header">
+    <h1>专业像素吉祥物设计（V3 终稿）</h1>
+    <p>非常抱歉之前生成的程序化图形让您觉得粗糙。这次我彻底摒弃了代码自动生成，采用<b>纯手工逐像素绘制（16x16 标准网格）</b>，为您精心设计了 6 款不同风格的高质量像素吉祥物。它们在任务栏的 24x24 极小尺寸下也能保持极高的辨识度和可爱的表情。</p>
+  </div>
 
-// ══════════════════════════════════════════════════════
-// 共享色板
-// ══════════════════════════════════════════════════════
-const G  = '#5cb85c'; // green body
-const GL = '#7bc67e'; // green light
-const GD = '#3d8b3d'; // green dark
-const GS = '#2a5e2a'; // green shadow
-const B  = '#ff9e9e'; // belly pink
-const BL = '#ffb3b3'; // belly light
-const H  = '#c069cc'; // horn purple
-const HL = '#d98ae0'; // horn light
-const HT = '#e878b0'; // horn tip pink
-const L  = '#4caf50'; // leaf
-const LD = '#2e7d32'; // leaf dark
-const C  = '#ffc107'; // coin
-const CD = '#b8860b'; // coin dark
-const CH = '#ffd54f'; // coin highlight
-const E  = '#1a1a2e'; // eye
-const EW = '#ffffff'; // eye white
-const K  = '#ffb3b3'; // cheek
-const M  = '#d04040'; // mouth
-const SP = '#ffd700'; // sparkle
+  <div class="grid" id="container"></div>
 
-// ══════════════════════════════════════════════════════
-// A: 圆滚滚胖精灵 — 忍耐兽体态，大肚子，坐姿
-// ══════════════════════════════════════════════════════
-{
-  add('a', 'A — 圆滚滚', '忍耐兽体态，胖圆身体坐金币上');
-  const S = 4, W = 20, H = 24;
-  const p = [
-    // horn (小角)
-    [9,0,HT],[10,0,HL],
-    [9,1,H],[10,1,H],
-    // head (big round)
-    [7,2,GL],[8,2,GL],[9,2,GL],[10,2,GL],[11,2,GL],[12,2,GL],
-    [6,3,G],[7,3,GL],[8,3,GL],[9,3,GL],[10,3,GL],[11,3,GL],[12,3,GL],[13,3,G],
-    [5,4,GD],[6,4,G],[7,4,G],[8,4,G],[9,4,G],[10,4,G],[11,4,G],[12,4,G],[13,4,G],[14,4,GD],
-    [5,5,GD],[6,5,G],[7,5,G],[8,5,G],[9,5,G],[10,5,G],[11,5,G],[12,5,G],[13,5,G],[14,5,GD],
-    [5,6,GS],[6,6,GD],[7,6,G],[8,6,G],[9,6,G],[10,6,G],[11,6,G],[12,6,G],[13,6,GD],[14,6,GS],
-    [6,7,GS],[7,7,GD],[8,7,GD],[9,7,GD],[10,7,GD],[11,7,GD],[12,7,GD],[13,7,GS],
-    // eyes (可爱圆眼)
-    [7,4,E],[8,4,EW],[8,5,E],
-    [11,4,E],[12,4,EW],[12,5,E],
-    // blush
-    [5,5,K],[14,5,K],
-    // mouth (w形)
-    [8,6,M],[10,6,M],[12,6,M],
-    [9,7,M],[11,7,M],
-    // HUGE round belly (忍耐兽特征)
-    [5,8,GD],[6,8,G],[7,8,G],[8,8,B],[9,8,B],[10,8,B],[11,8,B],[12,8,G],[13,8,G],[14,8,GD],
-    [4,9,GD],[5,9,G],[6,9,B],[7,9,B],[8,9,B],[9,9,B],[10,9,B],[11,9,B],[12,9,B],[13,9,G],[14,9,G],[15,9,GD],
-    [4,10,GS],[5,10,GD],[6,10,B],[7,10,B],[8,10,B],[9,10,B],[10,10,B],[11,10,B],[12,10,B],[13,10,GD],[14,10,GD],[15,10,GS],
-    [4,11,GS],[5,11,GD],[6,11,BL],[7,11,B],[8,11,B],[9,11,B],[10,11,B],[11,11,B],[12,11,BL],[13,11,GD],[14,11,GD],[15,11,GS],
-    [5,12,GS],[6,12,GD],[7,12,BL],[8,12,B],[9,12,B],[10,12,B],[11,12,B],[12,12,BL],[13,12,GD],[14,12,GS],
-    // arms (short stubby)
-    [3,9,GD],[3,10,G],[3,11,GD],
-    [16,9,GD],[16,10,G],[16,11,GD],
-    // feet
-    [6,13,GS],[7,13,GD],[8,13,GD],[9,13,GD],[10,13,GD],[11,13,GD],[12,13,GD],[13,13,GS],
-    [5,14,GS],[6,14,GS],[7,14,GS],[12,14,GS],[13,14,GS],[14,14,GS],
-    // coin base
-    [3,15,CD],[4,15,C],[5,15,CH],[6,15,C],[7,15,CH],[8,15,C],[9,15,CH],[10,15,C],[11,15,CH],[12,15,C],[13,15,CH],[14,15,C],[15,15,CH],[16,15,CD],
-    [3,16,CD],[4,16,CD],[5,16,C],[6,16,CH],[7,16,C],[8,16,CH],[9,16,C],[10,16,CH],[11,16,C],[12,16,CH],[13,16,C],[14,16,C],[15,16,CD],[16,16,CD],
-    [4,17,CD],[5,17,CD],[6,17,CD],[7,17,CD],[8,17,CD],[9,17,CD],[10,17,CD],[11,17,CD],[12,17,CD],[13,17,CD],[14,17,CD],[15,17,CD],
-    // leaf (held up)
-    [17,7,L],[18,6,L],
-    [16,8,LD],[17,8,L],[18,7,L],
-    [17,7,LD],
-    // sparkle
-    [3,2,SP],[16,2,SP],
-  ];
-  draw('a', p, W, H, S);
-}
+  <script>
+    const SCALE_LARGE = 8; // 16 * 8 = 128px
+    const SCALE_SMALL = 1.5; // 16 * 1.5 = 24px
 
-// ══════════════════════════════════════════════════════
-// B: 趴趴兽 — 趴着的胖精灵，更像忍耐兽睡觉姿势
-// ══════════════════════════════════════════════════════
-{
-  add('b', 'B — 趴趴兽', '趴着睡的胖精灵，忍耐兽经典姿势');
-  const S = 4, W = 24, H = 18;
-  const p = [
-    // horn
-    [5,1,HT],[6,1,HL],
-    [5,2,H],[6,2,H],
-    // head (big, facing right)
-    [4,3,GL],[5,3,GL],[6,3,GL],[7,3,GL],[8,3,GL],
-    [3,4,G],[4,4,GL],[5,4,GL],[6,4,GL],[7,4,GL],[8,4,GL],[9,4,G],
-    [3,5,GD],[4,5,G],[5,5,G],[6,5,G],[7,5,G],[8,5,G],[9,5,G],
-    [3,6,GS],[4,6,GD],[5,6,G],[6,6,G],[7,6,G],[8,6,G],[9,6,GD],
-    [4,7,GS],[5,7,GD],[6,7,GD],[7,7,GD],[8,7,GD],[9,7,GS],
-    // eyes (sleeping = horizontal lines)
-    [5,4,E],[6,4,E],[7,4,E],
-    [5,6,E],[6,6,E],[7,6,E],
-    // blush
-    [3,5,K],[9,5,K],
-    // sleeping "zzz"
-    [9,2,E],[10,1,E],[11,0,E],
-    // huge round body (趴着的，横向展开)
-    [7,7,GD],[8,7,G],[9,7,G],[10,7,G],[11,7,G],[12,7,G],[13,7,G],[14,7,G],[15,7,GD],
-    [6,8,GD],[7,8,G],[8,8,B],[9,8,B],[10,8,B],[11,8,B],[12,8,B],[13,8,G],[14,8,G],[15,8,G],[16,8,GD],
-    [5,9,GS],[6,9,GD],[7,9,B],[8,9,B],[9,9,B],[10,9,B],[11,9,B],[12,9,B],[13,9,B],[14,9,GD],[15,9,GD],[16,9,GD],[17,9,GS],
-    [6,10,GS],[7,10,GD],[8,10,BL],[9,10,B],[10,10,B],[11,10,B],[12,10,BL],[13,10,GD],[14,10,GD],[15,10,GD],[16,10,GS],
-    [7,11,GS],[8,11,GD],[9,11,GD],[10,11,GD],[11,11,GD],[12,11,GD],[13,11,GD],[14,11,GS],
-    // stubby arms
-    [5,8,GD],[4,9,G],[4,10,GD],
-    [17,8,GD],[18,9,G],[18,10,GD],
-    // feet
-    [7,12,GS],[8,12,GS],[9,12,GS],
-    [12,12,GS],[13,12,GS],[14,12,GS],
-    // coin base
-    [4,13,CD],[5,13,C],[6,13,CH],[7,13,C],[8,13,CH],[9,13,C],[10,13,CH],[11,13,C],[12,13,CH],[13,13,C],[14,13,CH],[15,13,C],[16,13,CH],[17,13,CD],
-    [4,14,CD],[5,14,CD],[6,14,C],[7,14,CH],[8,14,C],[9,14,CH],[10,14,C],[11,14,CH],[12,14,C],[13,14,CH],[14,14,C],[15,14,C],[16,14,CD],[17,14,CD],
-    [5,15,CD],[6,15,CD],[7,15,CD],[8,15,CD],[9,15,CD],[10,15,CD],[11,15,CD],[12,15,CD],[13,15,CD],[14,15,CD],[15,15,CD],[16,15,CD],
-    // leaf
-    [18,6,L],[19,5,L],[20,4,L],
-    [17,7,LD],[18,7,L],[19,6,L],
-    [18,6,LD],
-  ];
-  draw('b', p, W, H, S);
-}
+    // 6 Distinct High-Quality Pixel Art Designs
+    const designs = [
+      {
+        id: "cyber",
+        name: "1. 赛博小电视",
+        desc: "科技感与可爱并存，头顶小天线，宽屏幕脸。极具极客/看盘软件属性。",
+        colors: { '.': null, 'O': '#0f172a', 'B': '#06b6d4', 'L': '#67e8f9', 'S': '#1e293b', 'W': '#e0f2fe', 'P': '#0891b2', 'A': '#fcd34d', 'D': '#0891b2' },
+        pixels: [
+          ".......OO.......",
+          "......OAAO......",
+          ".....OABBBAO....",
+          "...OOOOOOOOOO...",
+          "..OLLLLLLLLLLO..",
+          ".OLBBBBBBBBBBBO.",
+          ".OLBSSSSSSSSBBO.",
+          ".OLBSWWSBBSWWSBO",
+          ".OLBSWPSBBSWPSBO",
+          ".OLBSSSSSSSSSBBO",
+          ".OLBBBBBBBBBBBO.",
+          "..ODDDDDDDDDDO..",
+          "...OOOOOOOOOO...",
+          "....O......O....",
+          "...OO......OO...",
+          "................"
+        ]
+      },
+      {
+        id: "cat",
+        name: "2. 招财喵",
+        desc: "股票必备的招财属性。白红金配色，竖耳，吉利且讨喜。",
+        colors: { '.': null, 'O': '#271c19', 'W': '#fffdf5', 'G': '#fbbf24', 'R': '#ef4444', 'P': '#fca5a5', 'E': '#271c19' },
+        pixels: [
+          "....O........O..",
+          "...OWO......OWO.",
+          "..OWRWO....OWRWO",
+          "..OWWWOOOOOOWWWO",
+          ".OWWWWWWWWWWWWW.",
+          ".OWWWWWWWWWWWWWO",
+          ".OWWEWWWWWWWWEWO",
+          ".OWWWWWOWOWWWWWO",
+          ".OWPWWWWWWWWWPWO",
+          ".OWWWWWWWWWWWWWO",
+          "..OWWWGGGGGGWWO.",
+          "..OWWWGOGOGGWWO.",
+          "...OWWGGGGGGWO..",
+          "....OOOOOOOOO...",
+          "................",
+          "................"
+        ]
+      },
+      {
+        id: "fox",
+        name: "3. 灵狐宝宝",
+        desc: "机敏聪慧的小狐狸/柴犬，宽脸颊大耳朵，代表着对市场敏锐的嗅觉。",
+        colors: { '.': null, 'O': '#2e1905', 'Y': '#f59e0b', 'L': '#fde68a', 'W': '#ffffff', 'E': '#2e1905', 'P': '#fca5a5' },
+        pixels: [
+          "...OO........OO.",
+          "..OYLO......OYLO",
+          "..OYLLO....OYLLO",
+          ".OYLLLYOOOOYLLLY",
+          ".OYLLYYYYYYYYLLY",
+          ".OYYYYYYYYYYYYYO",
+          ".OYYEYYYYYYYYEYO",
+          ".OYYYYYYWWYYYYYO",
+          ".OYYPWWWOWWWWPYO",
+          ".OYYWWWWWWWWWWYO",
+          "..OYWWWWWWWWWWYO",
+          "...OOWWWWWWWWOO.",
+          "....OOOOOOOOOO..",
+          "................",
+          "................",
+          "................"
+        ]
+      },
+      {
+        id: "slime",
+        name: "4. 史莱姆滴滴",
+        desc: "圆润无棱角的软萌水滴，经典 RPG 风格，动态感极强。",
+        colors: { '.': null, 'O': '#064e3b', 'B': '#10b981', 'L': '#6ee7b7', 'D': '#047857', 'W': '#ffffff', 'E': '#064e3b', 'P': '#a7f3d0' },
+        pixels: [
+          "................",
+          "......OOOO......",
+          "....OOLLLLO.....",
+          "...OLLBBBBLOO...",
+          "..OLBBBBBBBBBO..",
+          ".OLBBBBBBBBBBBO.",
+          ".OLBWWBBPWWBHBO.",
+          ".LBWEBBBPWEBHBBO",
+          ".LBBBBBBBBBBBBBO",
+          ".LBBBBBBBBBBBBBO",
+          ".LBPBBBBBBBBBPBO",
+          ".OBBBBBBBBBBBBBO",
+          ".ODDBBBBBBBBBBDO",
+          "..ODDDDDDDDDDDO.",
+          "...OOOOOOOOOOO..",
+          "................"
+        ]
+      },
+      {
+        id: "ghost",
+        name: "5. 小幽灵",
+        desc: "轻盈悬浮的小幽灵，拖着小尾巴。适合暗色主题的神秘精灵。",
+        colors: { '.': null, 'O': '#1e1b4b', 'W': '#f8fafc', 'L': '#ffffff', 'D': '#cbd5e1', 'B': '#93c5fd', 'E': '#1e1b4b', 'P': '#fca5a5' },
+        pixels: [
+          "......OOOO......",
+          "....OOLLLLO.....",
+          "...OLLWWWWLOO...",
+          "..OLWWWWWWWWWO..",
+          ".OLWWWWWWWWWWWO.",
+          ".OLWWWWWWWWWWWO.",
+          ".OLWBEWWBWBEWWO.",
+          ".OLWWWWWWWWWWWO.",
+          ".OLWPWWWWWWWPWO.",
+          ".OLWWWWWWWWWWWO.",
+          "..ODWWWWWWWWWDO.",
+          "...ODDDDDDDWDO..",
+          "....OOOOOODWDO..",
+          ".........ODDO...",
+          ".........OO.....",
+          "................"
+        ]
+      },
+      {
+        id: "monster",
+        name: "6. 小怪兽 (优化版)",
+        desc: "基于您之前的截图，重新精调了比例、高光和嘴唇弧度，更饱满生动。",
+        colors: { '.': null, 'O': '#271c19', 'M': '#f97316', 'L': '#fdba74', 'W': '#ffffff', 'E': '#271c19', 'B': '#fca5a5', 'D': '#c2410c' },
+        pixels: [
+          "......OOOO......",
+          ".....OLLLLO.....",
+          "....OLMMMMMO....",
+          "...OLMMMMMMMO...",
+          "..OLMMMMMMMMMO..",
+          ".OLMMMMMMMMMMMO.",
+          ".OLMWEWMMMMWEWO.",
+          ".OLMWWWMMMMWWWO.",
+          ".OLMMMMMMMMMMMO.",
+          ".OLMBMMMMMMMBMO.",
+          "..OMMMMMMMMMMMO.",
+          "...OMMMMMMMMMO..",
+          "....OOOOOOOOO...",
+          ".....O.....O....",
+          "....OO.....OO...",
+          "................"
+        ]
+      }
+    ];
 
-// ══════════════════════════════════════════════════════
-// C: 站立胖兽 — 像卡比兽站立姿势，双臂张开
-// ══════════════════════════════════════════════════════
-{
-  add('c', 'C — 站立胖兽', '卡比兽站立姿势，张开双臂');
-  const S = 4, W = 20, H = 26;
-  const p = [
-    // horn
-    [9,0,HT],[10,0,HL],
-    [9,1,H],[10,1,H],
-    // head
-    [7,2,GL],[8,2,GL],[9,2,GL],[10,2,GL],[11,2,GL],[12,2,GL],
-    [6,3,G],[7,3,GL],[8,3,GL],[9,3,GL],[10,3,GL],[11,3,GL],[12,3,GL],[13,3,G],
-    [5,4,GD],[6,4,G],[7,4,G],[8,4,G],[9,4,G],[10,4,G],[11,4,G],[12,4,G],[13,4,G],[14,4,GD],
-    [5,5,GD],[6,5,G],[7,5,G],[8,5,G],[9,5,G],[10,5,G],[11,5,G],[12,5,G],[13,5,G],[14,5,GD],
-    [5,6,GS],[6,6,GD],[7,6,G],[8,6,G],[9,6,G],[10,6,G],[11,6,G],[12,6,G],[13,6,GD],[14,6,GS],
-    [6,7,GS],[7,7,GD],[8,7,GD],[9,7,GD],[10,7,GD],[11,7,GD],[12,7,GD],[13,7,GS],
-    // eyes (^_^ closed happy)
-    [7,4,E],[8,3,E],[9,4,E],
-    [11,4,E],[12,3,E],[13,4,E],
-    // blush
-    [5,5,K],[6,5,K],[13,5,K],[14,5,K],
-    // mouth (big smile)
-    [8,6,M],[9,6,M],[10,6,EW],[11,6,M],
-    [8,7,M],[9,7,M],[10,7,M],[11,7,M],
-    // huge body
-    [4,8,GD],[5,8,G],[6,8,G],[7,8,B],[8,8,B],[9,8,B],[10,8,B],[11,8,B],[12,8,B],[13,8,G],[14,8,G],[15,8,GD],
-    [3,9,GD],[4,9,G],[5,9,G],[6,9,B],[7,9,B],[8,9,B],[9,9,B],[10,9,B],[11,9,B],[12,9,B],[13,9,G],[14,9,G],[15,9,G],[16,9,GD],
-    [3,10,GS],[4,10,GD],[5,10,G],[6,10,B],[7,10,B],[8,10,B],[9,10,B],[10,10,B],[11,10,B],[12,10,B],[13,10,G],[14,10,GD],[15,10,GD],[16,10,GS],
-    [3,11,GS],[4,11,GD],[5,11,GD],[6,11,BL],[7,11,B],[8,11,B],[9,11,B],[10,11,B],[11,11,B],[12,11,BL],[13,11,GD],[14,11,GD],[15,11,GD],[16,11,GS],
-    [4,12,GS],[5,12,GD],[6,12,GD],[7,12,BL],[8,12,B],[9,12,B],[10,12,B],[11,12,BL],[12,12,GD],[13,12,GD],[14,12,GD],[15,12,GS],
-    [5,13,GS],[6,13,GS],[7,13,GD],[8,13,GD],[9,13,GD],[10,13,GD],[11,13,GD],[12,13,GD],[13,13,GS],[14,13,GS],
-    // arms (wide open)
-    [1,9,GD],[2,9,G],[2,10,G],[1,11,GD],
-    [17,9,GD],[17,9,G],[18,9,G],[18,10,G],[17,11,GD],
-    // hands
-    [1,9,G],[18,9,G],
-    // feet
-    [6,14,GS],[7,14,GD],[8,14,GD],[9,14,GD],[10,14,GD],[11,14,GD],[12,14,GD],[13,14,GS],
-    [5,15,GS],[6,15,GS],[7,15,GS],[12,15,GS],[13,15,GS],[14,15,GS],
-    // coin
-    [3,16,CD],[4,16,C],[5,16,CH],[6,16,C],[7,16,CH],[8,16,C],[9,16,CH],[10,16,C],[11,16,CH],[12,16,C],[13,16,CH],[14,16,C],[15,16,CH],[16,16,CD],
-    [3,17,CD],[4,17,CD],[5,17,C],[6,17,CH],[7,17,C],[8,17,CH],[9,17,C],[10,17,CH],[11,17,C],[12,17,CH],[13,17,C],[14,17,C],[15,17,CD],[16,17,CD],
-    [4,18,CD],[5,18,CD],[6,18,CD],[7,18,CD],[8,18,CD],[9,18,CD],[10,18,CD],[11,18,CD],[12,18,CD],[13,18,CD],[14,18,CD],[15,18,CD],
-    // leaf (in left hand)
-    [0,8,L],[0,7,L],[-1,6,L],
-    [0,8,LD],[-1,7,L],
-    // sparkles
-    [2,1,SP],[17,1,SP],
-  ];
-  draw('c', p, W, H, S);
-}
+    function drawArt(ctx, design, scale) {
+      ctx.clearRect(0, 0, 16*scale, 16*scale);
+      for (let y = 0; y < 16; y++) {
+        for (let x = 0; x < 16; x++) {
+          const char = design.pixels[y][x];
+          const color = design.colors[char];
+          if (color) {
+            ctx.fillStyle = color;
+            ctx.fillRect(x * scale, y * scale, scale, scale);
+          }
+        }
+      }
+    }
 
-// ══════════════════════════════════════════════════════
-// D: Q版蛋形 — 最简化，像宝可梦蛋形精灵
-// ══════════════════════════════════════════════════════
-{
-  add('d', 'D — Q版蛋形', '极简蛋形轮廓，宝可梦迷你精灵风');
-  const S = 5, W = 14, H = 18;
-  const p = [
-    // horn
-    [6,0,HT],[7,0,HL],
-    [6,1,H],[7,1,H],
-    // head (egg shape)
-    [5,2,GL],[6,2,GL],[7,2,GL],[8,2,GL],
-    [4,3,G],[5,3,GL],[6,3,GL],[7,3,GL],[8,3,GL],[9,3,G],
-    [4,4,GD],[5,4,G],[6,4,G],[7,4,G],[8,4,G],[9,4,G],
-    [4,5,GS],[5,5,GD],[6,5,G],[7,5,G],[8,5,G],[9,5,GD],
-    // eyes
-    [5,3,E],[6,3,EW],
-    [8,3,E],[8,3,EW],// fix: right eye
-    // redraw eyes properly
-    // blush
-    [4,4,K],[9,4,K],
-    // mouth
-    [6,5,M],[7,5,M],
-    // body (egg continues down, gets wider)
-    [3,6,GS],[4,6,GD],[5,6,G],[6,6,B],[7,6,B],[8,6,G],[9,6,GD],[10,6,GS],
-    [3,7,GS],[4,7,GD],[5,7,B],[6,7,B],[7,7,B],[8,7,B],[9,7,GD],[10,7,GS],
-    [3,8,GS],[4,8,GD],[5,8,BL],[6,8,B],[7,8,B],[8,8,BL],[9,8,GD],[10,8,GS],
-    [4,9,GS],[5,9,GD],[6,9,GD],[7,9,GD],[8,9,GD],[9,9,GS],
-    // feet
-    [4,10,GS],[5,10,GS],[8,10,GS],[9,10,GS],
-    // arms (tiny)
-    [2,7,GD],[3,7,G],[10,7,G],[11,7,GD],
-    // coin
-    [2,11,CD],[3,11,C],[4,11,CH],[5,11,C],[6,11,CH],[7,11,C],[8,11,CH],[9,11,C],[10,11,CH],[11,11,C],[12,11,CD],
-    [2,12,CD],[3,12,CD],[4,12,C],[5,12,CH],[6,12,C],[7,12,CH],[8,12,C],[9,12,CH],[10,12,C],[11,12,CD],[12,12,CD],
-    [3,13,CD],[4,13,CD],[5,13,CD],[6,13,CD],[7,13,CD],[8,13,CD],[9,13,CD],[10,13,CD],[11,13,CD],
-    // leaf
-    [11,5,L],[12,4,L],
-    [10,6,LD],[11,6,L],[12,5,L],
-    [11,5,LD],
-    // sparkle
-    [3,1,SP],[10,1,SP],
-  ];
-  draw('d', p, W, H, S);
-}
-</script>
+    const container = document.getElementById('container');
+    
+    designs.forEach(d => {
+      const card = document.createElement('div');
+      card.className = 'card';
+      
+      const wrapper = document.createElement('div');
+      wrapper.className = 'canvas-wrapper';
+      
+      const canvasBig = document.createElement('canvas');
+      canvasBig.width = 16 * SCALE_LARGE;
+      canvasBig.height = 16 * SCALE_LARGE;
+      const ctxBig = canvasBig.getContext('2d');
+      drawArt(ctxBig, d, SCALE_LARGE);
+      wrapper.appendChild(canvasBig);
+      
+      const title = document.createElement('div');
+      title.className = 'title';
+      title.textContent = d.name;
+      
+      const desc = document.createElement('div');
+      desc.className = 'desc';
+      desc.textContent = d.desc;
+
+      const taskbar = document.createElement('div');
+      taskbar.className = 'taskbar-preview';
+      taskbar.innerHTML = `<span>任务栏尺寸模拟:</span>`;
+      
+      const tbIcon = document.createElement('div');
+      tbIcon.className = 'taskbar-icon';
+      const canvasSmall = document.createElement('canvas');
+      canvasSmall.width = 16 * SCALE_SMALL;
+      canvasSmall.height = 16 * SCALE_SMALL;
+      const ctxSmall = canvasSmall.getContext('2d');
+      drawArt(ctxSmall, d, SCALE_SMALL);
+      tbIcon.appendChild(canvasSmall);
+      taskbar.appendChild(tbIcon);
+
+      card.appendChild(wrapper);
+      card.appendChild(title);
+      card.appendChild(desc);
+      card.appendChild(taskbar);
+      container.appendChild(card);
+    });
+  </script>
 </body>
 </html>

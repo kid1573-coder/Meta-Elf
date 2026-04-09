@@ -6,6 +6,7 @@ const props = defineProps<{
   bucket: BrandMoodBucket;
   variant: number;
   theme: "light" | "dark";
+  colorScheme?: "redUp" | "greenUp";
   ariaLabel: string;
 }>();
 
@@ -59,79 +60,133 @@ const moodEmoji = computed(() => {
 
 type Pix = [number, number, string];
 
-const GRID = 14;
-const P = 1; // 缩小像素缩放比例，让 logo 更小
+const GRID = 16;
+const P = 1.5; // 缩小为 1.5 (24x24)，之前是 2 (32x32)
 
 function buildMascotPixels(): Pix[] {
-  const C  = "#e97451"; // coral main
-  const CL = "#f09070"; // coral light
-  const CD = "#c4533a"; // coral dark
-  const CK = "#a83820"; // coral deep
-  const W  = "#ffcc66"; // warm center
-  const WL = "#ffe0a0"; // warm highlight
-  const T  = "#ff8c42"; // orange tip
+  const OUT = props.theme === "dark" ? "#0f172a" : "#1e1b4b";
+  
+  // 保持脸部绝对纯白，只改变高光或阴影来提示涨跌
+  let bodyW = '#f8fafc'; // 主体脸部
+  let bodyL = '#ffffff'; // 高光
+  let bodyD = '#cbd5e1'; // 阴影
+  const B = '#93c5fd';
+  const P_BLUSH = '#fca5a5';
 
-  const starburstBase: Pix[] = [
-    // top ray
-    [7,0,T],[8,0,T],
-    [6,1,CL],[7,1,T],[8,1,T],[9,1,CL],
-    [7,2,C],[8,2,C],
-    // upper left ray
-    [3,2,T],[4,2,CL],
-    [2,3,T],[3,3,CL],[4,3,C],
-    [3,4,C],[4,4,C],
-    // upper right ray
-    [11,2,CL],[12,2,T],
-    [11,3,C],[12,3,CL],[13,3,T],
-    [11,4,C],[12,4,C],
-    // left ray
-    [1,7,T],[1,8,T],
-    [2,6,CL],[2,7,C],[2,8,C],[2,9,CL],
-    [3,7,C],[3,8,C],
-    // right ray
-    [13,7,T],[13,8,T],
-    [13,6,CL],[13,7,C],[13,8,C],[13,9,CL],
-    [12,7,C],[12,8,C],
-    // lower left ray
-    [3,11,C],[4,11,C],
-    [2,10,CL],[3,10,C],[4,10,C],
-    [3,12,CL],[4,12,T],
-    [3,13,T],
-    // lower right ray
-    [11,11,C],[12,11,C],
-    [11,10,C],[12,10,CL],[13,10,T],
-    [11,12,C],[12,12,CL],
-    [12,13,T],
-    // bottom ray
-    [7,14,T],[8,14,T],
-    [6,13,CL],[7,13,C],[8,13,C],[9,13,CL],
-    [7,12,C],[8,12,C],
-    // inner body (circle)
-    [4,4,C],[5,4,C],[6,4,C],[7,4,C],[8,4,C],[9,4,C],[10,4,C],[11,4,C],
-    [3,5,C],[4,5,C],[5,5,C],[6,5,C],[7,5,C],[8,5,C],[9,5,C],[10,5,C],[11,5,C],[12,5,C],
-    [3,6,C],[4,6,C],[5,6,CD],[6,6,CD],[7,6,CD],[8,6,CD],[9,6,CD],[10,6,CD],[11,6,C],[12,6,C],
-    [3,7,CD],[4,7,CD],[5,7,CD],[6,7,W],[7,7,W],[8,7,W],[9,7,W],[10,7,CD],[11,7,CD],[12,7,CD],
-    [3,8,CD],[4,8,CD],[5,8,W],[6,8,W],[7,8,WL],[8,8,WL],[9,8,W],[10,8,W],[11,8,CD],[12,8,CD],
-    [3,9,CD],[4,9,CD],[5,9,CD],[6,9,W],[7,9,W],[8,9,W],[9,9,W],[10,9,CD],[11,9,CD],[12,9,CD],
-    [3,10,C],[4,10,C],[5,10,CD],[6,10,CD],[7,10,CD],[8,10,CD],[9,10,CD],[10,10,CD],[11,10,C],[12,10,C],
-    [4,11,C],[5,11,C],[6,11,C],[7,11,C],[8,11,C],[9,11,C],[10,11,C],[11,11,C],
-  ];
+  const isUp = isStrongUp.value || isMildUp.value || isMicroUp.value;
+  const isDown = isStrongDown.value || isMildDown.value || isMicroDown.value;
 
-  const eyesBase: Pix[] = [
-    [6,7,CK],[7,6,CK],
-    [8,7,CK],[9,6,CK],
-  ];
-
-  const sparklePix: Pix[] = [
-    [0,6,W],[0,8,W],[14,6,W],[14,8,W],
-    [1,5,WL],[1,9,WL],[13,5,WL],[13,9,WL],
-  ];
-
-  const base = [...starburstBase, ...eyesBase];
-  if (isStrongUp.value || isMildUp.value || isMicroUp.value) {
-    return [...base, ...sparklePix];
+  if (isUp) {
+    if (props.colorScheme === "greenUp") {
+      bodyD = '#bbf7d0'; // 阴影带点绿
+    } else {
+      bodyD = '#fecaca'; // 阴影带点红
+    }
+  } else if (isDown) {
+    if (props.colorScheme === "greenUp") {
+      bodyD = '#fecaca'; // 阴影带点红
+    } else {
+      bodyD = '#bbf7d0'; // 阴影带点绿
+    }
   }
-  return base;
+
+  if (isWaiting.value || props.bucket === "flat") {
+     bodyW = '#f8fafc';
+     bodyL = '#ffffff';
+     bodyD = '#cbd5e1';
+  }
+
+  const grid = new Map<string, string>();
+  function set(x: number, y: number, c: string) { grid.set(`${x},${y}`, c); }
+
+  const basePixels = [
+    "......OOOO......",
+    "....OOLLLLO.....",
+    "...OLLWWWWLOO...",
+    "..OLWWWWWWWWWO..",
+    ".OLWWWWWWWWWWWO.",
+    ".OLWWWWWWWWWWWO.",
+    ".OLWBEWWBWBEWWO.",
+    ".OLWWWWWWWWWWWO.",
+    ".OLWPWWWWWWWPWO.",
+    ".OLWWWWWWWWWWWO.",
+    "..ODWWWWWWWWWDO.",
+    "...ODDDDDDDWDO..",
+    "....OOOOOODWDO..",
+    ".........ODDO...",
+    ".........OO.....",
+    "................"
+  ];
+
+  for (let y = 0; y < 16; y++) {
+    for (let x = 0; x < 16; x++) {
+      const char = basePixels[y][x];
+      if (char === 'O') set(x, y, OUT);
+      else if (char === 'W') set(x, y, bodyW);
+      else if (char === 'L') set(x, y, bodyL);
+      else if (char === 'D') set(x, y, bodyD);
+      else if (char === 'B') set(x, y, B);
+      else if (char === 'E') set(x, y, OUT);
+      else if (char === 'P') set(x, y, P_BLUSH);
+    }
+  }
+  
+  // Overrides for face
+  function clearFace() {
+    set(4, 6, bodyW); set(5, 6, bodyW); set(6, 6, bodyW); set(9, 6, bodyW); set(10, 6, bodyW); set(11, 6, bodyW);
+    set(4, 8, bodyW); set(12, 8, bodyW); // blush pos
+  }
+
+  function drawDefaultEyes() {
+    set(4, 6, B); set(5, 6, OUT); set(6, 6, bodyW);
+    set(9, 6, B); set(10, 6, OUT); set(11, 6, bodyW);
+  }
+
+  function drawClosedEyes() {
+    set(4, 6, OUT); set(5, 6, OUT); set(6, 6, bodyW);
+    set(9, 6, OUT); set(10, 6, OUT); set(11, 6, bodyW);
+  }
+
+  function drawBlush() {
+    set(4, 8, P_BLUSH); set(12, 8, P_BLUSH);
+  }
+
+  if (isWaiting.value) {
+    clearFace();
+    drawClosedEyes();
+    set(7, 8, OUT); set(8, 8, OUT); // sleep mouth
+  } else if (isDown) {
+    clearFace();
+    drawClosedEyes();
+    set(7, 8, OUT); set(8, 8, OUT); // frown
+    if (isStrongDown.value) {
+      set(4, 7, '#60a5fa'); set(4, 8, '#60a5fa'); // tear
+    }
+  } else if (isUp) {
+    clearFace();
+    drawDefaultEyes();
+    drawBlush();
+    set(7, 7, OUT); set(8, 7, OUT); // smile
+    if (isStrongUp.value) {
+      set(13, 3, '#fcd34d'); set(14, 2, '#fcd34d'); set(14, 4, '#fcd34d'); set(15, 3, '#fcd34d');
+    }
+  } else {
+    // Flat/Neutral
+    clearFace();
+    drawDefaultEyes();
+    drawBlush();
+  }
+
+  if (blink.value && !isWaiting.value && !isDown) {
+    clearFace();
+    drawClosedEyes();
+    drawBlush();
+  }
+
+  return Array.from(grid.entries()).map(([k, c]) => {
+    const [xs, ys] = k.split(",");
+    return [Number(xs), Number(ys), c] as Pix;
+  });
 }
 
 const pixelData = computed<Pix[]>(() => {

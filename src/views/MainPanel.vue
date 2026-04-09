@@ -704,6 +704,7 @@ async function ctxMoveDown() {
           :bucket="brandMood.bucket"
           :variant="brandMood.variant"
           :theme="brandTheme"
+          :color-scheme="settings?.colorScheme"
           :ariaLabel="brandMood.ariaLabel"
         />
       </div>
@@ -1248,7 +1249,7 @@ async function ctxMoveDown() {
   line-height: 0;
   display: flex;
   align-items: center;
-  transform: translateY(-5px);
+  transform: translateY(-10px);
 }
 
 .name {
