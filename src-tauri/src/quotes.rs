@@ -3716,6 +3716,113 @@ fn ai_fallback_signal_from_quote(change_pct: f64, timeframe_min: u32) -> AiSigna
     }
 }
 
+fn enrich_targets_with_market_context(mut sig: AiSignal, bars: &[AggBar], q: &QuoteRow) -> AiSignal {
+    let base = if let Some(b) = bars.last() {
+        if b.close > 0.0 { b.close } else { q.price.max(q.prev_close) }
+    } else {
+        q.price.max(q.prev_close)
+    };
+    if base <= 0.0 {
+        return sig;
+    }
+    let is_limit_up = q.change_pct >= 9.7;
+    if is_limit_up {
+        sig.target_high = None;
+        sig.target_low = None;
+        return normalize_ai_signal(sig);
+    }
+    let mut vol = 0.0_f64;
+    let mut cnt = 0.0_f64;
+    for b in bars.iter().rev().take(12) {
+        if b.close > 0.0 && b.high >= b.low {
+            vol += ((b.high - b.low) / b.close) * 100.0;
+            cnt += 1.0;
+        }
+    }
+    let vol_pct = if cnt > 0.0 { (vol / cnt).clamp(0.15, 4.0) } else { 0.6 };
+    let trend_pct = if bars.len() >= 6 {
+        let first = bars[bars.len().saturating_sub(6)].close;
+        let last = bars.last().map(|b| b.close).unwrap_or(base);
+        if first > 0.0 { (last / first - 1.0) * 100.0 } else { 0.0 }
+    } else {
+        0.0
+    };
+    let implied = sig.exp_move_pct.abs().clamp(0.0, 6.0);
+    let range_pct = (implied * 0.85 + vol_pct * 0.65).clamp(0.25, 6.0);
+    let min_side_pct = (vol_pct * 0.45 + 0.2).clamp(0.18, 2.4);
+    let bear_pressure = ((-q.change_pct).max(0.0) * 0.22 + (-trend_pct).max(0.0) * 0.38).clamp(0.0, 2.2);
+    let bull_pressure = (q.change_pct.max(0.0) * 0.22 + trend_pct.max(0.0) * 0.38).clamp(0.0, 2.2);
+    let up_range = (range_pct * (1.0 + bull_pressure * 0.10)).clamp(0.25, 8.0);
+    let down_range = (range_pct * (1.0 + bear_pressure * 0.10)).clamp(0.25, 8.0);
+
+    if sig.target_high.is_none() {
+        if sig.direction == "bullish" || sig.up_prob >= 54 || sig.confidence >= 56 {
+            sig.target_high = Some(base * (1.0 + up_range / 100.0));
+        }
+    } else if sig.direction != "bearish" && sig.up_prob >= 54 {
+        let floor_high = base * (1.0 + min_side_pct / 100.0);
+        if let Some(h) = sig.target_high {
+            if h < floor_high {
+                sig.target_high = Some(floor_high);
+            }
+        }
+    }
+    if sig.target_low.is_none() {
+        if sig.direction == "bearish" || sig.down_prob >= 54 || sig.confidence >= 56 {
+            sig.target_low = Some(base * (1.0 - down_range / 100.0));
+        }
+    } else if sig.direction != "bullish" && sig.down_prob >= 54 {
+        let ceil_low = base * (1.0 - min_side_pct / 100.0);
+        if let Some(l) = sig.target_low {
+            if l > ceil_low {
+                sig.target_low = Some(ceil_low);
+            }
+        }
+    }
+
+    if sig.target_high.is_none() && sig.target_low.is_some() && sig.up_prob >= 54 {
+        sig.target_high = Some(base * (1.0 + min_side_pct / 100.0));
+    }
+    if sig.target_low.is_none() && sig.target_high.is_some() && sig.down_prob >= 54 {
+        sig.target_low = Some(base * (1.0 - min_side_pct / 100.0));
+    }
+
+    if q.change_pct <= -3.0 && sig.down_prob >= 52 {
+        let tail_risk_pct = ((-q.change_pct - 2.0).max(0.0) * 0.24).clamp(0.0, 1.8);
+        let floor = base * (1.0 - (min_side_pct + tail_risk_pct) / 100.0);
+        match sig.target_low {
+            Some(v) if v > floor => sig.target_low = Some(floor),
+            None => sig.target_low = Some(floor),
+            _ => {}
+        }
+        if sig.direction != "bullish" {
+            let rebound_cap = base * (1.0 + (min_side_pct * 0.7).max(0.18) / 100.0);
+            if let Some(h) = sig.target_high {
+                if h > rebound_cap {
+                    sig.target_high = Some(rebound_cap);
+                }
+            }
+        }
+    } else if q.change_pct >= 3.0 && sig.up_prob >= 52 {
+        let meltup_pct = ((q.change_pct - 2.0).max(0.0) * 0.20).clamp(0.0, 1.6);
+        let ceil = base * (1.0 + (min_side_pct + meltup_pct) / 100.0);
+        match sig.target_high {
+            Some(v) if v < ceil => sig.target_high = Some(ceil),
+            None => sig.target_high = Some(ceil),
+            _ => {}
+        }
+        if sig.direction != "bearish" {
+            let pullback_floor = base * (1.0 - (min_side_pct * 0.7).max(0.18) / 100.0);
+            if let Some(l) = sig.target_low {
+                if l < pullback_floor {
+                    sig.target_low = Some(pullback_floor);
+                }
+            }
+        }
+    }
+    normalize_ai_signal(sig)
+}
+
 fn ai_client() -> Result<reqwest::Client, String> {
     let proxy_url = get_proxy();
     let mut builder = reqwest::Client::builder()
@@ -3735,6 +3842,7 @@ async fn deepseek_analyze(
     code: &str,
     timeframe_min: u32,
     bars: &[AggBar],
+    q: &QuoteRow,
 ) -> Result<AiSignal, String> {
     let mut slim: Vec<Value> = Vec::new();
     for b in bars.iter().rev().take(20).rev() {
@@ -3747,13 +3855,52 @@ async fn deepseek_analyze(
             "v": b.volume,
         }));
     }
+
+    let closes: Vec<f64> = bars.iter().filter_map(|b| if b.close > 0.0 { Some(b.close) } else { None }).collect();
+    let n = closes.len();
+    let last_close = closes.last().copied().unwrap_or(0.0);
+    let ret3 = if n >= 4 && closes[n - 4] > 0.0 {
+        (last_close / closes[n - 4] - 1.0) * 100.0
+    } else {
+        0.0
+    };
+    let ret8 = if n >= 9 && closes[n - 9] > 0.0 {
+        (last_close / closes[n - 9] - 1.0) * 100.0
+    } else {
+        0.0
+    };
+    let avg_range = if !bars.is_empty() {
+        let mut s = 0.0_f64;
+        let mut c = 0.0_f64;
+        for b in bars.iter().rev().take(12) {
+            if b.close > 0.0 && b.high >= b.low {
+                s += ((b.high - b.low) / b.close) * 100.0;
+                c += 1.0;
+            }
+        }
+        if c > 0.0 { s / c } else { 0.0 }
+    } else { 0.0 };
+    let ma3 = if n >= 3 { closes[n - 3..n].iter().sum::<f64>() / 3.0 } else { last_close };
+    let ma8 = if n >= 8 { closes[n - 8..n].iter().sum::<f64>() / 8.0 } else { last_close };
+    let trend = if ma8 > 0.0 { (ma3 / ma8 - 1.0) * 100.0 } else { 0.0 };
+    let features = serde_json::json!({
+        "lastClose": (last_close * 100.0).round() / 100.0,
+        "ret3Pct": (ret3 * 100.0).round() / 100.0,
+        "ret8Pct": (ret8 * 100.0).round() / 100.0,
+        "avgRangePct": (avg_range * 100.0).round() / 100.0,
+        "trendPct": (trend * 100.0).round() / 100.0,
+        "dayChangePct": (q.change_pct * 100.0).round() / 100.0,
+        "dayHighFromNowPct": if q.price > 0.0 { ((q.high / q.price - 1.0) * 100.0 * 100.0).round() / 100.0 } else { 0.0 },
+        "dayLowFromNowPct": if q.price > 0.0 { ((q.low / q.price - 1.0) * 100.0 * 100.0).round() / 100.0 } else { 0.0 },
+    });
+
     let body = serde_json::json!({
         "model": "deepseek-chat",
-        "temperature": 0.2,
-        "max_tokens": 260,
+        "temperature": 0.1,
+        "max_tokens": 320,
         "messages": [
-            {"role": "system", "content": "你是短线看盘助手。只输出严格 JSON，不要任何额外文字。字段必须齐全：direction(bullish|bearish|neutral), upProb(0-100整数), downProb(0-100整数, upProb+downProb=100), expMovePct(-10到10之间数字, 表示本周期期望涨跌幅%), targetHigh(数字或null, 本周期预计最高价), targetLow(数字或null, 本周期预计最低价), confidence(0-100整数), label(<=4字中文), reason(<=14字中文)。若把握不足，targetHigh/targetLow 必须返回 null，不要猜。"},
-            {"role": "user", "content": format!("标的: {code}\n周期: {timeframe_min}分钟\nbars(最近20根): {}\n请给短线方向、概率、期望幅度、以及有把握时的预计最高/最低价。", serde_json::to_string(&slim).unwrap_or_default())}
+            {"role": "system", "content": "你是短线看盘助手。只输出严格 JSON，不要任何额外文字。字段必须齐全：direction(bullish|bearish|neutral), upProb(0-100整数), downProb(0-100整数, upProb+downProb=100), expMovePct(-10到10之间数字, 表示本周期期望涨跌幅%), targetHigh(数字或null, 本周期预计最高价), targetLow(数字或null, 本周期预计最低价), confidence(0-100整数), label(<=4字中文), reason(<=14字中文)。若把握不足，targetHigh/targetLow 返回 null。若判断明确，尽量给出 targetHigh 与 targetLow。若个股接近涨停：upProb=封板概率，downProb=开板概率；若接近跌停：upProb=开板概率，downProb=封死概率。"},
+            {"role": "user", "content": format!("标的: {code}\n周期: {timeframe_min}分钟\nbars(最近20根): {}\n统计特征: {}\n请基于价格结构+波动+动量给短线方向、概率、期望幅度、以及预计最高/最低价。", serde_json::to_string(&slim).unwrap_or_default(), serde_json::to_string(&features).unwrap_or_default())}
         ]
     });
     let resp = client
@@ -3793,7 +3940,7 @@ pub async fn get_ai_signals_impl(
     if timeframe_min == 0 {
         return Ok(HashMap::new());
     }
-    let ttl = Duration::from_secs(60);
+    let ttl = Duration::from_secs(25);
     let mut out: HashMap<String, AiSignal> = HashMap::new();
     let key = api_key.trim();
     if key.is_empty() {
@@ -3817,7 +3964,7 @@ pub async fn get_ai_signals_impl(
 
     let mut new_calls = 0usize;
     for code in need {
-        if new_calls >= 8 {
+        if new_calls >= 20 {
             break;
         }
         let series = fetch_intraday_eastmoney(&em, &code).await;
@@ -3828,10 +3975,11 @@ pub async fn get_ai_signals_impl(
         } else {
             ai_fallback_signal_from_quote(q.change_pct, timeframe_min)
         };
-        let sig = match deepseek_analyze(&client, key, &code, timeframe_min, &bars).await {
+        let sig_raw = match deepseek_analyze(&client, key, &code, timeframe_min, &bars, &q).await {
             Ok(s) => s,
             Err(_) => fallback,
         };
+        let sig = enrich_targets_with_market_context(sig_raw, &bars, &q);
         ai_cache_put(&code, timeframe_min, &sig);
         out.insert(code, sig);
         new_calls += 1;

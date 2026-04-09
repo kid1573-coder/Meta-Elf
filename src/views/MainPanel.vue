@@ -127,11 +127,9 @@ function fallbackAiFromRow(row: QuoteRow, timeframeMin: number): AiSignal {
 function aiCellText(sig: AiSignal): string {
   const up = Math.max(0, Math.min(100, Math.round(sig.upProb)));
   const dn = Math.max(0, Math.min(100, Math.round(sig.downProb)));
-  const mv = Number.isFinite(sig.expMovePct) ? sig.expMovePct : 0;
-  const mv2 = (Math.round(mv * 10) / 10).toFixed(1);
-  if (sig.direction === "bullish") return `涨${up}/+${mv2}`;
-  if (sig.direction === "bearish") return `跌${dn}/${mv2}`;
-  return `震${up}/${mv2}`;
+  if (sig.direction === "bullish") return `涨${up}%`;
+  if (sig.direction === "bearish") return `跌${dn}%`;
+  return `震${up}%`;
 }
 
 async function loadAiSignalsOnce() {
@@ -289,9 +287,10 @@ const visibleCols = computed(() => {
       ["name", "price", "changePct", "volumeRatio", "sectorBlock", "aiHighPred", "aiLowPred"].includes(c.id),
     );
   const set = new Set(s.visibleColumns);
-  if (set.has("sectorBlock")) {
+  if (set.has("sectorBlock") || !!s.aiEnabled) {
     set.add("aiHighPred");
     set.add("aiLowPred");
+    set.add("sectorBlock");
   }
   // 保持 COLUMN_DEFS 中定义的顺序
   return COLUMN_DEFS.filter((c) => set.has(c.id));
@@ -374,21 +373,65 @@ function displayName(row: QuoteRow): string {
   return displayStockName(row, settings.value);
 }
 
-function aiTargetValue(sig: AiSignal, kind: "high" | "low"): number | null {
+function isRightAlignNumericCol(colId: string): boolean {
+  return !["name", "sectorBlock", "aiHighPred", "aiLowPred"].includes(colId);
+}
+
+function aiTargetValue(row: QuoteRow, sig: AiSignal, kind: "high" | "low"): number | null {
   const v = kind === "high" ? sig.targetHigh : sig.targetLow;
-  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return null;
-  return v;
+  if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
+  const base = row.price > 0 ? row.price : row.prevClose;
+  if (!(base > 0)) return null;
+  const move = Math.abs(Number.isFinite(sig.expMovePct) ? sig.expMovePct : 0);
+  const upBias = Math.max(0, Math.min(50, Math.round(sig.upProb) - 50));
+  const dnBias = Math.max(0, Math.min(50, Math.round(sig.downProb) - 50));
+  const dirBoostHigh = sig.direction === "bullish" ? 0.22 : sig.direction === "bearish" ? -0.1 : 0;
+  const dirBoostLow = sig.direction === "bearish" ? 0.22 : sig.direction === "bullish" ? -0.1 : 0;
+  const confBoost = Math.max(0, ((sig.confidence ?? 50) - 45) * 0.005);
+  const highPct = move * 0.55 + upBias * 0.045 + 0.12 + dirBoostHigh + confBoost;
+  const lowPct = move * 0.55 + dnBias * 0.045 + 0.12 + dirBoostLow + confBoost;
+  const pct = kind === "high" ? highPct : lowPct;
+  if (!Number.isFinite(pct) || pct < 0.08) return null;
+  const target = kind === "high" ? base * (1 + pct / 100) : base * (1 - pct / 100);
+  if (!Number.isFinite(target) || target <= 0) return null;
+  return Math.round(target * 100) / 100;
+}
+
+function isLimitUpRow(row: QuoteRow): boolean {
+  return Number.isFinite(row.changePct) && row.changePct >= 9.7;
+}
+
+function isLimitDownRow(row: QuoteRow): boolean {
+  return Number.isFinite(row.changePct) && row.changePct <= -9.7;
+}
+
+function aiProbText(sig: AiSignal, kind: "seal" | "open"): string {
+  const seal = Math.max(0, Math.min(100, Math.round(sig.upProb)));
+  const open = Math.max(0, Math.min(100, Math.round(sig.downProb)));
+  return kind === "seal" ? `封${seal}%` : `开${open}%`;
 }
 
 function aiTargetText(row: QuoteRow, sig: AiSignal, kind: "high" | "low"): string {
-  const target = aiTargetValue(sig, kind);
+  if (isLimitUpRow(row)) {
+    return kind === "high" ? aiProbText(sig, "seal") : aiProbText(sig, "open");
+  }
+  if (isLimitDownRow(row)) {
+    const open = Math.max(0, Math.min(100, Math.round(sig.upProb)));
+    const seal = Math.max(0, Math.min(100, Math.round(sig.downProb)));
+    return kind === "high" ? `开${open}%` : `封${seal}%`;
+  }
+  const target = aiTargetValue(row, sig, kind);
   if (target == null) return "—";
-  if (sig.confidence < 68) return "—";
   const base = row.price > 0 ? row.price : row.prevClose;
   if (!(base > 0)) return "—";
   const pct = ((target - base) / base) * 100;
-  if (!Number.isFinite(pct) || Math.abs(pct) < 0.35) return "—";
-  return `${fmtFixed(target, 2)} ${pct >= 0 ? "+" : ""}${fmtFixed(pct, 1)}%`;
+  if (!Number.isFinite(pct) || Math.abs(pct) < 0.08) return "—";
+  if (kind === "high") {
+    if (pct <= 0) return "—";
+    return `+${fmtFixed(pct, 1)}%`;
+  }
+  if (pct >= 0) return "—";
+  return `${fmtFixed(pct, 1)}%`;
 }
 
 function cell(row: QuoteRow, colId: string): string {
@@ -462,20 +505,36 @@ function pctForRow(row: QuoteRow, colId: string): number | null {
   if (colId === "aiHighPred") {
     if (!settings.value?.aiEnabled) return null;
     const sig = ai30.value[row.code.toLowerCase()] ?? fallbackAiFromRow(row, 30);
-    const target = aiTargetValue(sig, "high");
+    if (isLimitUpRow(row)) {
+      const seal = Math.max(0, Math.min(100, Math.round(sig.upProb)));
+      return seal - 50;
+    }
+    if (isLimitDownRow(row)) {
+      const open = Math.max(0, Math.min(100, Math.round(sig.upProb)));
+      return open - 50;
+    }
+    const target = aiTargetValue(row, sig, "high");
     const base = row.price > 0 ? row.price : row.prevClose;
-    if (target == null || !(base > 0) || sig.confidence < 68) return null;
+    if (target == null || !(base > 0)) return null;
     const pct = ((target - base) / base) * 100;
-    return Number.isFinite(pct) && Math.abs(pct) >= 0.35 ? pct : null;
+    return Number.isFinite(pct) && Math.abs(pct) >= 0.08 ? pct : null;
   }
   if (colId === "aiLowPred") {
     if (!settings.value?.aiEnabled) return null;
     const sig = ai30.value[row.code.toLowerCase()] ?? fallbackAiFromRow(row, 30);
-    const target = aiTargetValue(sig, "low");
+    if (isLimitUpRow(row)) {
+      const open = Math.max(0, Math.min(100, Math.round(sig.downProb)));
+      return 50 - open;
+    }
+    if (isLimitDownRow(row)) {
+      const seal = Math.max(0, Math.min(100, Math.round(sig.downProb)));
+      return seal - 50;
+    }
+    const target = aiTargetValue(row, sig, "low");
     const base = row.price > 0 ? row.price : row.prevClose;
-    if (target == null || !(base > 0) || sig.confidence < 68) return null;
+    if (target == null || !(base > 0)) return null;
     const pct = ((target - base) / base) * 100;
-    return Number.isFinite(pct) && Math.abs(pct) >= 0.35 ? pct : null;
+    return Number.isFinite(pct) && Math.abs(pct) >= 0.08 ? pct : null;
   }
   return null;
 }
@@ -1014,7 +1073,7 @@ async function ctxMoveDown() {
                       v-for="c in visibleCols"
                       :key="c.id"
                       :class="{
-                        num: c.id !== 'name',
+                        num: isRightAlignNumericCol(c.id),
                         'col-name': c.id === 'name',
                         'col-ai': ['sectorBlock', 'aiHighPred', 'aiLowPred'].includes(c.id),
                       }"
@@ -1044,7 +1103,7 @@ async function ctxMoveDown() {
                         v-for="c in visibleCols"
                         :key="c.id"
                         :class="{
-                          num: c.id !== 'name',
+                          num: isRightAlignNumericCol(c.id),
                           'col-name': c.id === 'name',
                           'col-ai': ['sectorBlock', 'aiHighPred', 'aiLowPred'].includes(c.id),
                           chg:
@@ -1610,7 +1669,7 @@ async function ctxMoveDown() {
 
 .grid th,
 .grid td {
-  padding: 4px 8px;
+  padding: 3px 4px;
   text-align: left;
   white-space: nowrap;
   border-bottom: 1px solid var(--yj-row-border);
@@ -1631,24 +1690,24 @@ async function ctxMoveDown() {
   text-align: right;
   font-family: "DM Sans", "Noto Sans SC", sans-serif;
   width: 1%;
-  padding-left: 12px;
+  padding-left: 4px;
 }
 
 .grid td.num {
   text-align: right;
   font-family: "DM Sans", "Noto Sans SC", sans-serif;
   width: 1%;
-  padding-left: 12px;
+  padding-left: 4px;
 }
 
 /* 名称列：固定窄宽 + ellipsis，其余列吃满剩余（小窗尤其明显） */
 .grid th.col-name,
 .grid td.col-name {
   width: 1%;
-  max-width: 6em;
+  max-width: 5.2em;
   min-width: 0;
   box-sizing: border-box;
-  padding-left: 8px;
+  padding-left: 4px;
   padding-right: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1656,11 +1715,12 @@ async function ctxMoveDown() {
 
 .grid th.col-ai,
 .grid td.col-ai {
-  width: 8.6em;
-  min-width: 8.6em;
-  max-width: 8.6em;
-  padding-left: 10px;
-  padding-right: 6px;
+  width: 4.6em;
+  min-width: 4.6em;
+  max-width: 4.6em;
+  text-align: left;
+  padding-left: 1px;
+  padding-right: 1px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
